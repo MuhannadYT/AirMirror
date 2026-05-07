@@ -1,0 +1,87 @@
+name: Build Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Target arch (x64, arm64, both)'
+        required: false
+        default: 'both'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      ARCH: ${{ github.event.inputs.arch || 'both' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup MSYS2 (UCRT64) for UxPlay
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-libplist
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: Build UxPlay (uxplay.exe)
+        shell: msys2 {0}
+        run: |
+          export PATH=/ucrt64/bin:$PATH
+          cd third_party/UxPlay
+          cmake -S . -B build-ucrt64 -G Ninja -DNO_MARCH_NATIVE=ON
+          cmake --build build-ucrt64
+          mkdir -p ../../src/AirMirror/tools/uxplay
+          cp build-ucrt64/uxplay.exe ../../src/AirMirror/tools/uxplay/uxplay.exe
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = (Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue).FullName
+          if (-not $iscc) { $iscc = (Get-ChildItem 'C:\Program Files\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue).FullName }
+          if (-not $iscc) { throw 'ISCC not found after install' }
+          echo "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build installers
+        shell: pwsh
+        run: |
+          .\scripts\build-installer.ps1 -Arch $env:ARCH -SkipUxPlay
+
+      - name: Upload installers as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirMirror-installers
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true

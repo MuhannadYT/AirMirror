@@ -1,0 +1,18 @@
+# .NET / VS build outputs
+bin/
+obj/
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# UxPlay build & staged binary
+third_party/UxPlay/build-ucrt64/
+third_party/UxPlay/build/
+src/AirMirror/tools/uxplay/uxplay.exe
+
+# Installer output
+dist/
+
+# Logs
+*.log

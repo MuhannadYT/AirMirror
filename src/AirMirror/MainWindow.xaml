@@ -1,0 +1,306 @@
+<Window x:Class="AirMirror.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AirMirror"
+        Icon="pack://application:,,,/Assets/AirMirror.ico"
+        Width="1060"
+        Height="720"
+        MinWidth="920"
+        MinHeight="620"
+        Background="{StaticResource SurfaceBrush}"
+        Closing="OnClosing"
+        KeyDown="OnKeyDown"
+        Loaded="OnLoaded">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+    </Grid.RowDefinitions>
+
+    <Border Grid.Row="0"
+            Background="#FFFFFF"
+            BorderBrush="{StaticResource StrokeBrush}"
+            BorderThickness="0,0,0,1">
+      <Grid Margin="28,20">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <Border Width="38" Height="38" CornerRadius="10" Background="{StaticResource AccentSoftBrush}" Margin="0,0,12,0">
+            <Grid>
+              <Ellipse Width="16" Height="16" Stroke="{StaticResource AccentBrush}" StrokeThickness="2"/>
+              <Ellipse Width="6" Height="6" Fill="{StaticResource AccentBrush}"/>
+            </Grid>
+          </Border>
+          <StackPanel>
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="AirMirror" FontSize="21" FontWeight="SemiBold"/>
+              <Border x:Name="StatusBadge"
+                      Background="#EEF7F3"
+                      CornerRadius="999"
+                      Padding="10,4"
+                      Margin="12,1,0,0">
+                <TextBlock x:Name="StatusText" Text="Stopped" FontSize="12" Foreground="{StaticResource SuccessBrush}"/>
+              </Border>
+            </StackPanel>
+            <TextBlock x:Name="StatusSubtext" Text="AirPlay stopped" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,3,0,0"/>
+          </StackPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="StartStopButton" Content="Start" Style="{StaticResource PrimaryButton}" Click="OnStartStopClick" MinWidth="140" Padding="24,8"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" Margin="28">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+
+      <ScrollViewer Grid.Row="0" Grid.Column="0" VerticalScrollBarVisibility="Auto">
+        <StackPanel>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="10" Padding="20">
+            <StackPanel>
+              <TextBlock Text="Display" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,14"/>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Detected resolution" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="DetectedResolutionText" Grid.Column="1" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              </Grid>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Monitor resolution" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <ComboBox x:Name="ResolutionModeBox" Grid.Column="1" SelectionChanged="OnResolutionModeChanged">
+                  <ComboBoxItem Content="Auto"/>
+                  <ComboBoxItem Content="Custom"/>
+                </ComboBox>
+              </Grid>
+
+              <Grid x:Name="CustomResolutionPanel" Margin="190,0,0,2">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="10"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="10"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="WidthBox" ToolTip="Width"/>
+                <TextBox x:Name="HeightBox" Grid.Column="2" ToolTip="Height"/>
+                <TextBox x:Name="RefreshBox" Grid.Column="4" ToolTip="Refresh rate"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,18,0,0">
+            <StackPanel>
+              <TextBlock Text="Receiver" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,14"/>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Start in" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                  <RadioButton x:Name="FullscreenRadio" Content="Fullscreen"/>
+                  <RadioButton x:Name="WindowedRadio" Content="Windowed"/>
+                </StackPanel>
+              </Grid>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Video playback" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <CheckBox x:Name="AutoFullscreenVideoCheckBox"
+                          Grid.Column="1"
+                          Content="Auto play content in fullscreen"
+                          FontFamily="Segoe UI"
+                          FontSize="13"
+                          VerticalAlignment="Center"/>
+              </Grid>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Play videos in external player" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <CheckBox x:Name="EnableHlsVideoCheckBox"
+                          Grid.Column="1"
+                          Content="On (handle YouTube/AirPlay video casting)"
+                          FontFamily="Segoe UI"
+                          FontSize="13"
+                          VerticalAlignment="Center"
+                          Checked="OnEnableHlsToggled"
+                          Unchecked="OnEnableHlsToggled"/>
+              </Grid>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="AirPlay name" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <TextBox x:Name="AirPlayNameBox" Grid.Column="1"/>
+              </Grid>
+
+              <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Audio output" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                  <RadioButton x:Name="AudioPcRadio" Content="PC"/>
+                  <RadioButton x:Name="AudioIphoneRadio" Content="iPhone"/>
+                </StackPanel>
+              </Grid>
+
+              <Grid Margin="0,0,0,2">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="190"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="HDR support" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                  <RadioButton x:Name="HdrAutoRadio" Content="Auto"/>
+                  <RadioButton x:Name="HdrOnRadio" Content="On"/>
+                  <RadioButton x:Name="HdrOffRadio" Content="Off"/>
+                </StackPanel>
+              </Grid>
+
+              <CheckBox x:Name="MinimizeToTrayCheckBox"
+                        Content="Exit to tray when window is closed"
+                        FontFamily="Segoe UI"
+                        FontSize="13"
+                        Margin="190,16,0,0"/>
+
+              <CheckBox x:Name="LaunchOnSystemStartupCheckBox"
+                        Content="Start on startup (launch when Windows starts)"
+                        FontFamily="Segoe UI"
+                        FontSize="13"
+                        Margin="190,8,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,18,0,0">
+            <Expander Header="Advanced" FontSize="16" FontWeight="SemiBold">
+              <StackPanel Margin="0,14,0,0">
+                <TextBlock Text="Engine" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                <Grid Margin="0,0,0,12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="190"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="6"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="UxPlay path" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"/>
+                  <Grid Grid.Column="1">
+                    <TextBox x:Name="UxPlayPathBox" TextChanged="OnUxPlayPathChanged"/>
+                    <TextBlock x:Name="UxPlayPathPlaceholder"
+                               Text="Default"
+                               Foreground="{StaticResource MutedTextBrush}"
+                               VerticalAlignment="Center"
+                               Margin="8,0,0,0"
+                               IsHitTestVisible="False"/>
+                  </Grid>
+                  <Button Grid.Column="3" Content="Browse" Click="OnBrowseUxPlayClick"/>
+                  <Button Grid.Column="5" Content="Restore default" Click="OnRestoreUxPlayDefaultClick"/>
+                </Grid>
+                <CheckBox x:Name="LaunchCheckBox" Content="Start receiver when AirMirror opens" FontFamily="Segoe UI" FontSize="13" Margin="190,0,0,14"/>
+
+                <TextBlock Text="Command" FontSize="14" FontWeight="SemiBold" Margin="0,6,0,8"/>
+                <TextBox x:Name="CommandBox"
+                         IsReadOnly="True"
+                         TextWrapping="Wrap"
+                         MinHeight="96"
+                         Background="#F8FAFD"
+                         BorderBrush="{StaticResource StrokeBrush}"
+                         FontWeight="Normal"/>
+
+                <TextBlock Text="Activity" FontSize="14" FontWeight="SemiBold" Margin="0,18,0,8"/>
+                <TextBox x:Name="LogBox"
+                         IsReadOnly="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         Height="260"
+                         Background="#0E1726"
+                         Foreground="#D6E4FF"
+                         BorderBrush="#0E1726"
+                         FontFamily="Consolas"
+                         FontSize="12"
+                         FontWeight="Normal"/>
+              </StackPanel>
+            </Expander>
+          </Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,18,0,0">
+            <StackPanel>
+              <TextBlock Text="Credits" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock VerticalAlignment="Center" FontSize="13">
+                  <Run Text="Made with "/>
+                  <Run Text="&#x2764;" Foreground="#E0245E"/>
+                  <Run Text=" by Muhannad"/>
+                </TextBlock>
+                <Button Margin="10,0,0,0"
+                        Padding="6,4"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Cursor="Hand"
+                        ToolTip="https://github.com/MuhannadYT/AirMirror"
+                        Tag="https://github.com/MuhannadYT/AirMirror"
+                        Click="OnOpenUrlClick">
+                  <Path Width="18" Height="18" Stretch="Uniform" Fill="#24292F"
+                        Data="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+                </Button>
+              </StackPanel>
+
+              <StackPanel Orientation="Horizontal">
+                <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{StaticResource MutedTextBrush}">
+                  <Run Text="Powered by UxPlay &#x2014; thanks to all its developers "/>
+                  <Run Text="&#x2764;" Foreground="#E0245E"/>
+                </TextBlock>
+                <Button Margin="10,0,0,0"
+                        Padding="6,4"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Cursor="Hand"
+                        ToolTip="https://github.com/FDH2/UxPlay"
+                        Tag="https://github.com/FDH2/UxPlay"
+                        Click="OnOpenUrlClick">
+                  <Path Width="18" Height="18" Stretch="Uniform" Fill="#24292F"
+                        Data="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+                </Button>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+
+      <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+        <Button Content="Save" Click="OnSaveClick" Margin="0,0,10,0"/>
+        <Button Content="Save &amp; Restart" Style="{StaticResource PrimaryButton}" Click="OnSaveRestartClick"/>
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

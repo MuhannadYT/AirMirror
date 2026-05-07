@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\AirMirror.ico</ApplicationIcon>
+    <AssemblyName>AirMirror</AssemblyName>
+    <RootNamespace>AirMirror</RootNamespace>
+    <!-- LibVLC.Windows still ships the legacy win10-* RIDs; opt back into the
+         classic RID graph and pin to win-x64 so .NET 9 SDK resolves runtime packs. -->
+    <UseRidGraph>true</UseRidGraph>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="tools\uxplay\uxplay.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('tools\uxplay\uxplay.exe')" />
+    <Resource Include="Assets\AirMirror.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="LibVLCSharp" Version="3.8.5" />
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.8.5" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.20" />
+    <!-- LibVLCSharp.WPF transitively pulls in Microsoft.WindowsAppSDK which triggers
+         WinUI MSIX/MrtCore build tasks that fail in a plain WPF project. We don't use
+         WinUI, so suppress that transitive dependency entirely. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.1.1" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
