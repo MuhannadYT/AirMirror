@@ -25,7 +25,7 @@ public sealed class AppSettings
     /// YouTube/streaming “AirPlay Video” button on iOS). When false, the receiver runs
     /// without any -hls flag — only mirror/audio AirPlay is offered.
     /// </summary>
-    public bool EnableHlsVideo { get; set; } = true;
+    public bool EnableHlsVideo { get; set; } = false;
 
     /// <summary>
     /// When true (default), closing the main window hides it to the tray instead of exiting.

@@ -276,7 +276,7 @@
               </StackPanel>
 
               <StackPanel Orientation="Horizontal">
-                <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{StaticResource MutedTextBrush}">
+                <TextBlock VerticalAlignment="Center" FontSize="13">
                   <Run Text="Powered by UxPlay &#x2014; thanks to all its developers "/>
                   <Run Text="&#x2764;" Foreground="#E0245E"/>
                 </TextBlock>

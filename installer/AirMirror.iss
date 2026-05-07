@@ -173,3 +173,80 @@ begin
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'AirMirror');
   end;
 end;
+
+function IsAirMirrorRunning(): Boolean;
+var
+  ResultCode: Integer;
+  TempFile: String;
+  Lines: TArrayOfString;
+  I: Integer;
+begin
+  Result := False;
+  TempFile := ExpandConstant('{tmp}\airmirror-tasklist.txt');
+  // Use cmd /c with redirection so the output goes to a file we can read.
+  if Exec(ExpandConstant('{cmd}'),
+          '/C tasklist /FI "IMAGENAME eq AirMirror.exe" /NH > "' + TempFile + '"',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if FileExists(TempFile) and LoadStringsFromFile(TempFile, Lines) then
+    begin
+      for I := 0 to GetArrayLength(Lines) - 1 do
+      begin
+        if Pos('AirMirror.exe', Lines[I]) > 0 then
+        begin
+          Result := True;
+          Break;
+        end;
+      end;
+    end;
+    DeleteFile(TempFile);
+  end;
+end;
+
+procedure ForceCloseAirMirror();
+var
+  ResultCode: Integer;
+begin
+  // /F = force, /T = also kill any child processes (uxplay)
+  Exec(ExpandConstant('{cmd}'),
+       '/C taskkill /F /T /IM AirMirror.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{cmd}'),
+       '/C taskkill /F /T /IM uxplay.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Give Windows a moment to release file handles.
+  Sleep(800);
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  Response: Integer;
+begin
+  Result := True;
+  while IsAirMirrorRunning() do
+  begin
+    Response := MsgBox(
+      'AirMirror is currently running.' + #13#10 + #13#10 +
+      'Please close it (right-click the system-tray icon and choose Exit) so it can be uninstalled cleanly.' + #13#10 + #13#10 +
+      'Click "Retry" once you have closed it, or "Ignore" to force-close it now.',
+      mbConfirmation, MB_ABORTRETRYIGNORE);
+    case Response of
+      IDABORT:
+        begin
+          Result := False;
+          Exit;
+        end;
+      IDIGNORE:
+        begin
+          ForceCloseAirMirror();
+          if IsAirMirrorRunning() then
+          begin
+            MsgBox('Failed to close AirMirror. Uninstall aborted.', mbError, MB_OK);
+            Result := False;
+            Exit;
+          end;
+        end;
+      // IDRETRY falls through to re-check the loop.
+    end;
+  end;
+end;
