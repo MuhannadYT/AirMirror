@@ -76,6 +76,12 @@ Type: files; Name: "{userappdata}\..\Local\AirMirror\receiver.log"
 [Code]
 var
   AirPlayNamePage: TInputQueryWizardPage;
+  FirewallPage: TWizardPage;
+  FirewallCheckbox: TNewCheckBox;
+  FirewallExplain: TNewStaticText;
+  FirewallWarning: TNewStaticText;
+
+procedure FirewallCheckboxClick(Sender: TObject); forward;
 
 procedure InitializeWizard;
 var
@@ -89,6 +95,51 @@ begin
 
   DefaultName := GetUserNameString + '''s PC';
   AirPlayNamePage.Values[0] := DefaultName;
+
+  // Custom page: ask whether to auto-allow AirPlay through Windows Defender Firewall.
+  FirewallPage := CreateCustomPage(AirPlayNamePage.ID,
+    'Windows Defender Firewall',
+    'AirMirror needs Windows to allow incoming AirPlay traffic for audio and video.');
+
+  FirewallCheckbox := TNewCheckBox.Create(FirewallPage);
+  FirewallCheckbox.Parent := FirewallPage.Surface;
+  FirewallCheckbox.Left := 0;
+  FirewallCheckbox.Top := 8;
+  FirewallCheckbox.Width := FirewallPage.SurfaceWidth;
+  FirewallCheckbox.Height := ScaleY(20);
+  FirewallCheckbox.Caption := 'Auto allow AirPlay in Windows Defender (will ask for admin)';
+  FirewallCheckbox.Checked := True;
+  FirewallCheckbox.OnClick := @FirewallCheckboxClick;
+
+  FirewallExplain := TNewStaticText.Create(FirewallPage);
+  FirewallExplain.Parent := FirewallPage.Surface;
+  FirewallExplain.Left := ScaleX(20);
+  FirewallExplain.Top := FirewallCheckbox.Top + FirewallCheckbox.Height + ScaleY(4);
+  FirewallExplain.Width := FirewallPage.SurfaceWidth - ScaleX(20);
+  FirewallExplain.AutoSize := False;
+  FirewallExplain.Height := ScaleY(32);
+  FirewallExplain.WordWrap := True;
+  FirewallExplain.Caption := 'This guarantees that Windows allows AirPlay to get audio and video.';
+
+  FirewallWarning := TNewStaticText.Create(FirewallPage);
+  FirewallWarning.Parent := FirewallPage.Surface;
+  FirewallWarning.Left := ScaleX(20);
+  FirewallWarning.Top := FirewallExplain.Top + FirewallExplain.Height + ScaleY(8);
+  FirewallWarning.Width := FirewallPage.SurfaceWidth - ScaleX(20);
+  FirewallWarning.AutoSize := False;
+  FirewallWarning.Height := ScaleY(80);
+  FirewallWarning.WordWrap := True;
+  FirewallWarning.Font.Color := $000000FF; // red (BGR)
+  FirewallWarning.Caption :=
+    'Windows may do this automatically, however sometimes it doesn''t. ' +
+    'This guarantees that audio and video works. ' +
+    'If audio and video doesn''t work for you then please check the help section on GitHub, or reinstall.';
+  FirewallWarning.Visible := not FirewallCheckbox.Checked;
+end;
+
+procedure FirewallCheckboxClick(Sender: TObject);
+begin
+  FirewallWarning.Visible := not FirewallCheckbox.Checked;
 end;
 
 function EscapeJsonString(const S: String): String;
@@ -153,6 +204,50 @@ begin
   end;
 end;
 
+// AirPlay (and uxplay's audio RTP) requires inbound UDP packets. Windows
+// Firewall blocks unsolicited inbound UDP for unprivileged apps by default,
+// which results in the iPhone successfully establishing the AirPlay control
+// connection (TCP) and screen-mirroring (TCP) but no audio packets ever
+// arriving (UDP), so video plays with no sound. We add explicit allow rules
+// for uxplay.exe on every profile (Domain/Private/Public) for both UDP and
+// TCP. netsh advfirewall requires admin; the installer is per-user so we
+// elevate via ShellExec(runas) which triggers a single UAC prompt. If the
+// user declines elevation, we silently continue -- AirPlay still works for
+// video, audio just won't pass through until they allow uxplay.exe manually.
+procedure RunNetshElevated(const Args: String);
+var
+  ResultCode: Integer;
+begin
+  // Use cmd /c so we can chain multiple netsh invocations behind one UAC prompt.
+  ShellExec('runas', ExpandConstant('{cmd}'), '/C ' + Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure AddFirewallRules();
+var
+  UxPlayPath, Cmd: String;
+begin
+  UxPlayPath := ExpandConstant('{app}\tools\uxplay\uxplay.exe');
+  // Chain all 4 netsh commands into one elevated cmd /c so the user only
+  // sees a single UAC prompt. '&' (single ampersand) runs them sequentially
+  // regardless of exit code, so the deletes are no-ops if no stale rules exist.
+  Cmd :=
+    'netsh advfirewall firewall delete rule name="AirMirror UxPlay UDP In" >nul 2>&1 & ' +
+    'netsh advfirewall firewall delete rule name="AirMirror UxPlay TCP In" >nul 2>&1 & ' +
+    'netsh advfirewall firewall add rule name="AirMirror UxPlay UDP In" dir=in action=allow program="' + UxPlayPath + '" protocol=UDP profile=any enable=yes & ' +
+    'netsh advfirewall firewall add rule name="AirMirror UxPlay TCP In" dir=in action=allow program="' + UxPlayPath + '" protocol=TCP profile=any enable=yes';
+  RunNetshElevated(Cmd);
+end;
+
+procedure RemoveFirewallRules();
+var
+  Cmd: String;
+begin
+  Cmd :=
+    'netsh advfirewall firewall delete rule name="AirMirror UxPlay UDP In" >nul 2>&1 & ' +
+    'netsh advfirewall firewall delete rule name="AirMirror UxPlay TCP In" >nul 2>&1';
+  RunNetshElevated(Cmd);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ChosenName: String;
@@ -163,6 +258,8 @@ begin
     if ChosenName = '' then
       ChosenName := GetUserNameString + '''s PC';
     WriteAirPlayNameToSettings(ChosenName);
+    if FirewallCheckbox.Checked then
+      AddFirewallRules();
   end;
 end;
 
@@ -171,6 +268,7 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'AirMirror');
+    RemoveFirewallRules();
   end;
 end;
 

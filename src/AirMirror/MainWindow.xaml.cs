@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -31,6 +32,31 @@ public partial class MainWindow : Window
         LoadSettingsIntoControls();
         RefreshDisplayState();
         RefreshCommandPreview();
+
+        // Show the user which version they're on inside the Updates panel.
+        var ver = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? typeof(MainWindow).Assembly.GetName().Version?.ToString(3)
+            ?? "unknown";
+        var plus = ver.IndexOf('+');
+        if (plus >= 0) ver = ver[..plus];
+        CurrentVersionText.Text = $"Current version: {ver}";
+    }
+
+    private void OnCheckForUpdatesClick(object sender, RoutedEventArgs e)
+    {
+        CheckForUpdatesButton.IsEnabled = false;
+        try
+        {
+            (System.Windows.Application.Current as App)?.CheckForUpdatesManually(this);
+        }
+        finally
+        {
+            // Re-enable shortly after so the user can re-trigger if they want; the actual
+            // network call is async on a Task.Run thread inside CheckForUpdatesManually.
+            Dispatcher.BeginInvoke(new Action(() => CheckForUpdatesButton.IsEnabled = true),
+                System.Windows.Threading.DispatcherPriority.Background);
+        }
     }
 
     private void LoadSettingsIntoControls()

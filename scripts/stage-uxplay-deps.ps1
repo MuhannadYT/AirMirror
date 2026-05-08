@@ -127,6 +127,42 @@ if (Test-Path $gioModSrc) {
   Get-ChildItem -Path $gioModSrc -Filter *.dll -File -ErrorAction SilentlyContinue | ForEach-Object {
     Copy-Item -Force $_.FullName (Join-Path $gioModDst $_.Name)
   }
+  # Walk imports of every GIO module too (e.g. libgiolibproxy.dll needs libproxy.dll).
+  Get-ChildItem $gioModDst -Filter *.dll | ForEach-Object {
+    $gioImports = Get-DllImports $_.FullName
+    foreach ($dllName in $gioImports) {
+      $key = $dllName.ToLowerInvariant()
+      if ($visited.ContainsKey($key) -and $visited[$key]) { continue }
+      $candidate = Join-Path $ucrtBin $dllName
+      if (-not (Test-Path $candidate)) { $visited[$key] = $false; continue }
+      $visited[$key] = $true
+      Copy-Item -Force $candidate (Join-Path $StageDir $dllName)
+      $sq = New-Object System.Collections.Queue
+      $sq.Enqueue($candidate)
+      while ($sq.Count -gt 0) {
+        $cur = $sq.Dequeue()
+        foreach ($sub in (Get-DllImports $cur)) {
+          $sk = $sub.ToLowerInvariant()
+          if ($visited.ContainsKey($sk) -and $visited[$sk]) { continue }
+          $sc = Join-Path $ucrtBin $sub
+          if (-not (Test-Path $sc)) { $visited[$sk] = $false; continue }
+          $visited[$sk] = $true
+          Copy-Item -Force $sc (Join-Path $StageDir $sub)
+          $sq.Enqueue($sc)
+        }
+      }
+    }
+  }
+}
+
+# --- Drop noisy plugins that have unused/missing deps and pollute uxplay's stderr ---
+# libgstcodec2json is for amateur-radio Codec2 audio; nothing in UxPlay touches it,
+# but it's in the standard gst-plugins-bad bundle and its missing dep (codec2)
+# spams "Failed to load plugin" warnings on every run. Just remove it.
+$noisyPlugins = @('libgstcodec2json.dll')
+foreach ($p in $noisyPlugins) {
+  $f = Join-Path (Join-Path $StageDir 'lib\gstreamer-1.0') $p
+  if (Test-Path $f) { Remove-Item -Force $f }
 }
 
 # --- Copy gst-plugin-scanner.exe (used by GStreamer to enumerate plugins) ---

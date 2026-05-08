@@ -19,6 +19,14 @@ public sealed partial class ReceiverProcessService
     public event EventHandler<HlsDurationEventArgs>? HlsDurationAvailable;
     public event EventHandler? HlsClientAlive;
 
+    /// <summary>
+    /// Raised the first time UxPlay logs that it has registered an AirPlay client in the
+    /// current receiver session. Used to opportunistically kick the update checker —
+    /// see <see cref="UpdateCheckService"/>. Resets when the receiver is restarted.
+    /// </summary>
+    public event EventHandler<string>? AirPlayClientConnected;
+    private bool _clientConnectedFiredThisSession;
+
     public bool IsRunning => _process is { HasExited: false };
     public string? ResolvedUxPlayPath { get; private set; }
     public string LastCommandLine { get; private set; } = "";
@@ -97,6 +105,7 @@ public sealed partial class ReceiverProcessService
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
 
+            _clientConnectedFiredThisSession = false;
             StatusText = "Broadcasting";
             Log("Receiver started.");
             Log(LastCommandLine);
@@ -385,7 +394,44 @@ public sealed partial class ReceiverProcessService
             ParseHlsFallbackLog(message);
         }
 
+        // UxPlay logs "connection request from <name> (<model>) with deviceID = ..." the
+        // moment any AirPlay client touches the receiver — long before pairing/registration
+        // completes. Use that as the earliest possible trigger for the opportunistic update
+        // check (see UpdateCheckService). Fired once per session.
+        if (!_clientConnectedFiredThisSession &&
+            (message.Contains("connection request from", StringComparison.OrdinalIgnoreCase) ||
+             message.Contains("registered new client", StringComparison.OrdinalIgnoreCase)))
+        {
+            _clientConnectedFiredThisSession = true;
+            var name = ExtractClientName(message);
+            AirPlayClientConnected?.Invoke(this, name);
+        }
+
         Log(message);
+    }
+
+    private static string ExtractClientName(string line)
+    {
+        // Possible formats:
+        //   "... registered new client: <name> DeviceID = ..."
+        //   "... connection request from <name> (<model>) with deviceID = ..."
+        const string registeredMarker = "registered new client:";
+        var i = line.IndexOf(registeredMarker, StringComparison.OrdinalIgnoreCase);
+        if (i >= 0)
+        {
+            var rest = line[(i + registeredMarker.Length)..].TrimStart();
+            var deviceIdx = rest.IndexOf("DeviceID", StringComparison.OrdinalIgnoreCase);
+            return (deviceIdx > 0 ? rest[..deviceIdx] : rest).Trim();
+        }
+        const string connMarker = "connection request from";
+        i = line.IndexOf(connMarker, StringComparison.OrdinalIgnoreCase);
+        if (i >= 0)
+        {
+            var rest = line[(i + connMarker.Length)..].TrimStart();
+            var paren = rest.IndexOf('(');
+            return (paren > 0 ? rest[..paren] : rest).Trim();
+        }
+        return string.Empty;
     }
 
     private void ParseHlsFallbackLog(string message)

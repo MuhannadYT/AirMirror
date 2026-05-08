@@ -1,11 +1,6 @@
-<h1>
-  <img
-    src="docs/images/airmirror-logo.svg"
-    alt="AirMirror logo"
-    width="72"
-    align="center"
-  />
-  AirMirror
+<h1 align="left">
+  <img src="docs/images/airmirror-logo.svg" alt="AirMirror logo" width="72" />
+  &nbsp;AirMirror
 </h1>
 
 **AirMirror** is a native Windows app that adds an AirPlay receiver to your PC — mimicking macOS's AirPlay as close as possible. Mirror your iPhone, iPad, or Mac screen, stream YouTube videos, and play music wirelessly. All based on the [UxPlay](https://github.com/FDH2/UxPlay) AirPlay core. Enjoy!

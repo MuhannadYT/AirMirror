@@ -254,6 +254,33 @@
 
           <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,18,0,0">
             <StackPanel>
+              <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock x:Name="CurrentVersionText" FontSize="13" FontWeight="SemiBold"/>
+                  <TextBlock Text="AirMirror checks for new releases automatically when an AirPlay client connects (about once a month)."
+                             Foreground="{StaticResource MutedTextBrush}"
+                             FontSize="12"
+                             TextWrapping="Wrap"
+                             Margin="0,4,0,0"/>
+                </StackPanel>
+                <Button Grid.Column="1"
+                        x:Name="CheckForUpdatesButton"
+                        Content="Check for updates"
+                        Click="OnCheckForUpdatesClick"
+                        VerticalAlignment="Center"
+                        MinWidth="160"
+                        Padding="16,8"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" CornerRadius="10" Padding="20" Margin="0,18,0,0">
+            <StackPanel>
               <TextBlock Text="Credits" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
 
               <StackPanel Orientation="Horizontal" Margin="0,0,0,8">

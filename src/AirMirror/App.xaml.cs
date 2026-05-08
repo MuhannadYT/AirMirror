@@ -15,6 +15,7 @@ public partial class App : System.Windows.Application
     private LibVLC? _libVlc;
     private PlaybackWindow? _playback;
     private HlsOverlayWindow? _overlay;
+    private UpdateCheckService? _updateChecker;
 
     public ReceiverProcessService Receiver => _receiver ?? throw new InvalidOperationException("Receiver not initialized.");
 
@@ -51,6 +52,12 @@ public partial class App : System.Windows.Application
         _receiver.HlsNativeStopped += OnHlsNativeStopped;
         _receiver.HlsNativePositionUpdated += OnHlsNativePositionUpdated;
         _receiver.HlsNativeAudioTracksUpdated += OnHlsNativeAudioTracksUpdated;
+        _receiver.AirPlayClientConnected += OnAirPlayClientConnected;
+
+        // Update checker only fires when a client connects (never in the background) and
+        // is rate-limited to ~once per week internally; see UpdateCheckService for details.
+        _updateChecker = new UpdateCheckService(_settingsStore, msg => _receiver?.LogDiagnostic(msg));
+        _updateChecker.UpdateAvailable += OnUpdateAvailable;
 
         CreateTrayIcon();
 
@@ -144,6 +151,102 @@ public partial class App : System.Windows.Application
     private void OnHlsClientAlive(object? sender, EventArgs e)
     {
         Dispatcher.BeginInvoke(() => _playback?.MarkAirPlayClientAlive());
+    }
+
+    private void OnAirPlayClientConnected(object? sender, string clientName)
+    {
+        // Fire-and-forget: the checker self-throttles to ~1/week and is no-op if not due.
+        _updateChecker?.TriggerCheckIfDue();
+    }
+
+    private void OnUpdateAvailable(object? sender, UpdateAvailableEventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            // Marshal to UI thread before showing the dialog. Owner = main window when visible
+            // so the prompt is properly modal to the app rather than a stray top-level window.
+            var owner = _mainWindow is { IsVisible: true } mw ? mw : null;
+            ShowUpdateDialog(owner, e);
+        });
+    }
+
+    /// <summary>
+    /// Shows the "update available" dialog using a TaskDialog so we can label the buttons
+    /// "Open update page" and "Ignore this version" instead of generic Yes/No.
+    /// </summary>
+    internal void ShowUpdateDialog(Window? owner, UpdateAvailableEventArgs e)
+    {
+        var openBtn = new TaskDialogCommandLinkButton("Open update page",
+            "Opens the GitHub release page in your browser.");
+        var ignoreBtn = new TaskDialogCommandLinkButton("Ignore this version",
+            $"You won't be reminded about {e.NewVersion} again.");
+
+        var page = new TaskDialogPage
+        {
+            Caption = "Update available – AirMirror",
+            Heading = $"AirMirror {e.NewVersion} is available",
+            Text =
+                $"You are currently running AirMirror {e.CurrentVersion}.\n\n" +
+                $"A newer release ({e.NewVersion}) is available on GitHub.",
+            Icon = TaskDialogIcon.Information,
+            AllowCancel = true,
+            Buttons = { openBtn, ignoreBtn }
+        };
+
+        var ownerHandle = owner is null ? IntPtr.Zero
+            : new System.Windows.Interop.WindowInteropHelper(owner).Handle;
+        var clicked = ownerHandle == IntPtr.Zero
+            ? TaskDialog.ShowDialog(page)
+            : TaskDialog.ShowDialog(ownerHandle, page);
+
+        if (ReferenceEquals(clicked, openBtn))
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = e.ReleaseUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"Could not open browser: {ex.Message}",
+                    "AirMirror", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        else
+        {
+            // "Ignore this version" or dialog dismissed via X / Esc — treat both as
+            // "stop reminding me about this exact version".
+            _updateChecker?.MarkDismissed(e.NewVersion);
+        }
+    }
+
+    /// <summary>
+    /// Manually invoked from MainWindow's "Check for updates" button. Forces an immediate
+    /// check (ignores the weekly throttle and the previously-dismissed version) and always
+    /// shows feedback — either the update prompt or a "you're up to date" message.
+    /// </summary>
+    internal void CheckForUpdatesManually(Window? owner)
+    {
+        if (_updateChecker is null) return;
+
+        _ = Task.Run(async () =>
+        {
+            var result = await _updateChecker.CheckForUpdatesNowAsync().ConfigureAwait(false);
+            await Dispatcher.BeginInvoke(() =>
+            {
+                if (result is null)
+                {
+                    System.Windows.MessageBox.Show(owner ?? _mainWindow!,
+                        $"You're running the latest version of AirMirror ({_updateChecker.CurrentVersion}).",
+                        "AirMirror", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                ShowUpdateDialog(owner ?? _mainWindow, result);
+            });
+        });
     }
 
     private void OnAirPlayClientStale(object? sender, EventArgs e)

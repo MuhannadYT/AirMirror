@@ -36,6 +36,18 @@ public sealed class AppSettings
     /// When true (default), AirMirror auto-launches when Windows starts (registered under HKCU Run).
     /// </summary>
     public bool LaunchOnSystemStartup { get; set; } = true;
+
+    /// <summary>
+    /// UTC timestamp of the last time we queried GitHub for a newer release.
+    /// Used to throttle update checks to roughly once a week. Null means never checked.
+    /// </summary>
+    public DateTime? LastUpdateCheckUtc { get; set; }
+
+    /// <summary>
+    /// Latest GitHub release tag we have already shown the "update available" prompt for.
+    /// Prevents nagging the user every connection if they choose not to update right away.
+    /// </summary>
+    public string? LastDismissedUpdateVersion { get; set; }
 }
 
 public enum ResolutionMode
