@@ -1,6 +1,11 @@
-<h1 align="left">
-  <img src="docs/images/airmirror-logo.svg" alt="AirMirror logo" width="72" />
-  &nbsp;AirMirror
+<h1>
+  <img
+    src="docs/images/airmirror-logo.svg"
+    alt="AirMirror logo"
+    width="72"
+    align="center"
+  />
+  AirMirror
 </h1>
 
 **AirMirror** is a native Windows app that adds an AirPlay receiver to your PC — mimicking macOS's AirPlay as close as possible. Mirror your iPhone, iPad, or Mac screen, stream YouTube videos, and play music wirelessly. All based on the [UxPlay](https://github.com/FDH2/UxPlay) AirPlay core. Enjoy!
@@ -144,6 +149,60 @@ Made with ❤ by [**MuhannadYT**](https://github.com/MuhannadYT).
 Powered by [**UxPlay**](https://github.com/FDH2/UxPlay) — thanks to all of its developers ❤. UxPlay is licensed under the GPL; see [`third_party/UxPlay/LICENSE`](third_party/UxPlay/LICENSE).
 
 ---
+
+## Troubleshooting
+
+<details>
+<summary><strong>I have video but no audio when I AirPlay to my PC</strong></summary>
+
+This is almost always **Windows Defender Firewall** silently dropping the inbound UDP packets that carry the AirPlay audio stream. Video uses TCP (which Windows lets through) so it works fine, but audio never reaches the receiver.
+
+The AirMirror installer offers to add the necessary firewall rules for you (the *"Auto allow AirPlay in Windows Defender"* checkbox on the install wizard). If you unchecked that, or the rule didn't take, you can add it manually:
+
+1. Open **Windows PowerShell as Administrator** (right-click Start → *Terminal (Admin)*).
+2. Paste **all four** of these commands and press Enter (replace `%LOCALAPPDATA%` lines if you installed for all users — see note below):
+
+   ```powershell
+   netsh advfirewall firewall delete rule name="AirMirror UxPlay UDP In"
+   netsh advfirewall firewall delete rule name="AirMirror UxPlay TCP In"
+   netsh advfirewall firewall add rule name="AirMirror UxPlay UDP In" dir=in action=allow program="$env:LOCALAPPDATA\Programs\AirMirror\tools\uxplay\uxplay.exe" protocol=UDP profile=any enable=yes
+   netsh advfirewall firewall add rule name="AirMirror UxPlay TCP In" dir=in action=allow program="$env:LOCALAPPDATA\Programs\AirMirror\tools\uxplay\uxplay.exe" protocol=TCP profile=any enable=yes
+   ```
+
+   > If you installed AirMirror **for all users** (admin install), replace `$env:LOCALAPPDATA\Programs\AirMirror` with `$env:ProgramFiles\AirMirror` (or wherever the installer placed it).
+
+3. Disconnect AirPlay on your iPhone, then reconnect. Audio should now come through.
+
+To verify the rules exist:
+
+```powershell
+netsh advfirewall firewall show rule name="AirMirror UxPlay UDP In"
+netsh advfirewall firewall show rule name="AirMirror UxPlay TCP In"
+```
+
+To remove the rules (e.g. before reinstalling):
+
+```powershell
+netsh advfirewall firewall delete rule name="AirMirror UxPlay UDP In"
+netsh advfirewall firewall delete rule name="AirMirror UxPlay TCP In"
+```
+</details>
+
+<details>
+<summary><strong>My iPhone doesn't see "AirMirror" in the AirPlay picker</strong></summary>
+
+- Make sure the receiver is **Started** (open AirMirror — the status badge at the top should say *"Broadcasting"*).
+- Turn off WiFi on your iPhone, then turn it back on, this will force a AirPlay refresh.
+- Your PC and iPhone must be on the **same Wi-Fi network** (or wired network bridged to the same subnet).
+
+</details>
+
+<details>
+<summary><strong>Update notifications never appear</strong></summary>
+
+AirMirror only checks for updates **when an AirPlay client connects** to the receiver, and at most **once a month**. To force an immediate check, open AirMirror and click **Check for updates** in the *Updates* section of the main window.
+
+</details>
 
 ## License
 
