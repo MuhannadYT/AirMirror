@@ -6,10 +6,13 @@ obj/
 *.user
 *.suo
 
-# UxPlay build & staged binary
+# UxPlay build & staged binary + bundled runtime
 third_party/UxPlay/build-ucrt64/
 third_party/UxPlay/build/
 src/AirMirror/tools/uxplay/uxplay.exe
+src/AirMirror/tools/uxplay/*.dll
+src/AirMirror/tools/uxplay/*.exe
+src/AirMirror/tools/uxplay/lib/
 
 # Installer output
 dist/

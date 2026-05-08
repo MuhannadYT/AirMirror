@@ -259,12 +259,15 @@ public sealed partial class ReceiverProcessService
             return;
         }
 
+        // Bundled DLLs (MSYS2/UCRT64 runtime) live next to uxplay.exe in shipped builds.
         var runtimePaths = new List<string> { binDirectory };
+
+        // Fall back to a developer's local MSYS2 install when bundled DLLs are absent
+        // (e.g. running from `dotnet build` without having run stage-uxplay-deps.ps1).
         if (Directory.Exists(@"C:\msys64\ucrt64\bin"))
         {
             runtimePaths.Add(@"C:\msys64\ucrt64\bin");
         }
-
         if (Directory.Exists(@"C:\msys64\mingw64\bin"))
         {
             runtimePaths.Add(@"C:\msys64\mingw64\bin");
@@ -275,16 +278,40 @@ public sealed partial class ReceiverProcessService
             : Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
         startInfo.Environment["PATH"] = $"{string.Join(';', runtimePaths.Distinct(StringComparer.OrdinalIgnoreCase))};{existingPath}";
 
-        var gstScanner = @"C:\msys64\ucrt64\libexec\gstreamer-1.0\gst-plugin-scanner.exe";
-        if (File.Exists(gstScanner))
+        // Prefer bundled GStreamer plugins (shipped with the installer) over any
+        // dev-machine MSYS2 install, so the same code path works on end-user PCs.
+        var bundledGstPlugins = Path.Combine(binDirectory, "lib", "gstreamer-1.0");
+        if (Directory.Exists(bundledGstPlugins))
         {
-            startInfo.Environment["GST_PLUGIN_SCANNER"] = gstScanner;
+            startInfo.Environment["GST_PLUGIN_PATH"] = bundledGstPlugins;
+            startInfo.Environment["GST_PLUGIN_SYSTEM_PATH"] = bundledGstPlugins;
+            startInfo.Environment["GST_PLUGIN_SYSTEM_PATH_1_0"] = bundledGstPlugins;
+            // Disable GStreamer's plugin registry caching across machines.
+            startInfo.Environment["GST_REGISTRY_FORK"] = "no";
+        }
+        else
+        {
+            // Dev fallback: point at MSYS2's plugin tree.
+            var gstPlugins = @"C:\msys64\ucrt64\lib\gstreamer-1.0";
+            if (Directory.Exists(gstPlugins))
+            {
+                startInfo.Environment["GST_PLUGIN_SYSTEM_PATH_1_0"] = gstPlugins;
+            }
         }
 
-        var gstPlugins = @"C:\msys64\ucrt64\lib\gstreamer-1.0";
-        if (Directory.Exists(gstPlugins))
+        // Bundled scanner if present, otherwise dev MSYS2 fallback.
+        var bundledScanner = Path.Combine(binDirectory, "gst-plugin-scanner.exe");
+        if (File.Exists(bundledScanner))
         {
-            startInfo.Environment["GST_PLUGIN_SYSTEM_PATH_1_0"] = gstPlugins;
+            startInfo.Environment["GST_PLUGIN_SCANNER"] = bundledScanner;
+        }
+        else
+        {
+            var gstScanner = @"C:\msys64\ucrt64\libexec\gstreamer-1.0\gst-plugin-scanner.exe";
+            if (File.Exists(gstScanner))
+            {
+                startInfo.Environment["GST_PLUGIN_SCANNER"] = gstScanner;
+            }
         }
     }
 

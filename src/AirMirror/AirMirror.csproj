@@ -17,7 +17,10 @@
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="tools\uxplay\uxplay.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('tools\uxplay\uxplay.exe')" />
+    <!-- Bundle uxplay.exe + all its MSYS2/UCRT64 runtime DLLs and GStreamer plugins
+         under tools\uxplay\ so the installer can ship a self-contained UxPlay. The
+         entire directory is staged by scripts\stage-uxplay-deps.ps1 before build. -->
+    <Content Include="tools\uxplay\**\*" Exclude="tools\uxplay\.gitkeep" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('tools\uxplay\uxplay.exe')" />
     <Resource Include="Assets\AirMirror.ico" />
   </ItemGroup>
   <ItemGroup>

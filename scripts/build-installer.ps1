@@ -73,6 +73,19 @@ if (-not (Test-Path $uxplayStaged) -and -not $SkipUxPlay) {
 }
 if (-not (Test-Path $uxplayStaged)) {
     Write-Warning "uxplay.exe is missing at $uxplayStaged. The installer will still build but the receiver won't run on the target machine."
+} elseif (-not $SkipUxPlay) {
+    # Ensure all GStreamer/MSYS2 runtime DLLs and plugins are bundled next to
+    # uxplay.exe so the installer ships a self-contained UxPlay.
+    $stagedPlugins = Join-Path $root 'src\AirMirror\tools\uxplay\lib\gstreamer-1.0'
+    if (-not (Test-Path $stagedPlugins)) {
+        Write-Host "==> Staging UxPlay runtime DLLs + GStreamer plugins..." -ForegroundColor Cyan
+        & (Join-Path $PSScriptRoot 'stage-uxplay-deps.ps1')
+        if ($LASTEXITCODE -ne 0) {
+            throw "stage-uxplay-deps.ps1 failed. The installer would not include the runtime libraries that uxplay.exe needs."
+        }
+    } else {
+        Write-Host "UxPlay runtime libraries already staged." -ForegroundColor DarkGray
+    }
 }
 
 # --- 3. build per-arch --------------------------------------------------------

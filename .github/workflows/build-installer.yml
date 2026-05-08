@@ -58,6 +58,28 @@ jobs:
           mkdir -p ../../src/AirMirror/tools/uxplay
           cp build-ucrt64/uxplay.exe ../../src/AirMirror/tools/uxplay/uxplay.exe
 
+      - name: Stage UxPlay runtime DLLs + GStreamer plugins
+        shell: pwsh
+        run: |
+          # MSYS2 setup-msys2 action installs to D:\a\_temp\msys64 (varies); locate it.
+          $candidates = @(
+            'D:\a\_temp\msys64',
+            'C:\msys64',
+            "$env:RUNNER_TEMP\msys64"
+          )
+          $msys2 = $null
+          foreach ($c in $candidates) { if (Test-Path (Join-Path $c 'ucrt64\bin')) { $msys2 = $c; break } }
+          if (-not $msys2) {
+            # Fall back to discovering it dynamically.
+            $found = Get-ChildItem 'D:\a\_temp','C:\','D:\' -Recurse -Filter 'ucrt64' -Directory -ErrorAction SilentlyContinue |
+                     Where-Object { Test-Path (Join-Path $_.FullName 'bin\objdump.exe') } |
+                     Select-Object -First 1
+            if ($found) { $msys2 = (Split-Path $found.FullName -Parent) }
+          }
+          if (-not $msys2) { throw 'Could not locate MSYS2 root with ucrt64\bin\objdump.exe' }
+          Write-Host "Using MSYS2 root: $msys2"
+          .\scripts\stage-uxplay-deps.ps1 -Msys2Root $msys2
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
