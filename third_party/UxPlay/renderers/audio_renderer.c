@@ -52,6 +52,9 @@ typedef struct audio_renderer_s {
 static audio_renderer_t *renderer_type[NFORMATS];
 static audio_renderer_t *renderer = NULL;
 
+#define MAX_AUDIO_SINK_RESTARTS 2
+static int audio_sink_restarts = 0;
+
 /* GStreamer Caps strings for Airplay-defined audio compression types (ct) */
 
 /* ct = 1; linear PCM (uncompressed): 44100/16/2, S16LE */
@@ -240,9 +243,12 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
 
 void audio_renderer_stop() {
     if (renderer) {
-        gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
-        gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
+        /* cleared first: a sink that is rendering as it is stopped posts an error
+         * ("sink not negotiated") that the bus callback must not act on */
+        audio_renderer_t *stopped = renderer;
         renderer = NULL;
+        gst_app_src_end_of_stream(GST_APP_SRC(stopped->appsrc));
+        gst_element_set_state (stopped->pipeline, GST_STATE_NULL);
     }
 }
 
@@ -297,6 +303,7 @@ void  audio_renderer_start(unsigned char *ct) {
     } else if (id >= 0) {
         logger_log(logger, LOGGER_INFO, "start audio connection, format %s", format[id]);
         renderer = renderer_type[id];
+        audio_sink_restarts = 0;
         gst_element_set_state (renderer->pipeline, GST_STATE_PLAYING);
         gst_audio_pipeline_base_time = gst_element_get_base_time(renderer->appsrc);
     } else {
@@ -404,12 +411,21 @@ static gboolean gstreamer_audio_pipeline_bus_callback(GstBus *bus, GstMessage *m
         logger_log(logger, LOGGER_INFO, "GStreamer error (audio): %s %s", GST_MESSAGE_SRC_NAME(message),err->message);
         g_error_free(err);
         g_free(debug);
-        if (renderer->appsrc) {
-            gst_app_src_end_of_stream (GST_APP_SRC(renderer->appsrc));
+        /* AirMirror: ending the main loop here took the whole AirPlay session with it (video
+         * window and client connection), and was fatal if renderer had just been stopped.
+         * Lost audio is no reason to lose mirroring: reopen the sink (which is what
+         * connecting again would do) and if that does not cure it, carry on without sound. */
+        audio_renderer_t *failed = renderer;
+        if (failed && failed->bus == bus) {
+            gst_element_set_state (failed->pipeline, GST_STATE_NULL);
+            if (audio_sink_restarts++ < MAX_AUDIO_SINK_RESTARTS) {
+                gst_element_set_state (failed->pipeline, GST_STATE_PLAYING);
+                gst_audio_pipeline_base_time = gst_element_get_base_time(failed->appsrc);
+            } else {
+                logger_log(logger, LOGGER_INFO, "audio will not be played for the rest of this session");
+                render_audio = FALSE;
+            }
         }
-        gst_bus_set_flushing(bus, TRUE);
-        gst_element_set_state (renderer->pipeline, GST_STATE_READY);
-        g_main_loop_quit( (GMainLoop *) loop);
 	break;
     }
     case GST_MESSAGE_EOS:

@@ -85,6 +85,7 @@
 #define LOWEST_ALLOWED_PORT 1024
 #define HIGHEST_PORT 65535
 #define MISSED_FEEDBACK_LIMIT 15
+#define MIRROR_FEEDBACK_LIMIT 5   /* AirMirror: see feedback_callback */
 #define MIN_PASSWORD_LENGTH 4
 #define DEFAULT_PLAYBIN_VERSION 3
 #define BT709_FIX "capssetter caps=\"video/x-h264, colorimetry=bt709\""
@@ -122,6 +123,11 @@ static bool new_window_closing_behavior = true;
 #endif
 static bool close_window;
 static bool full_video_reset = true;
+static bool mirror_session_active = false;       /* AirMirror: mirror video is arriving, and no reset has ended it */
+static gint64 mirror_end_time = 0;               /* AirMirror: when reset_callback must end that session (0: never) */
+static bool client_session_started = false;      /* AirMirror: a client reached SETUP, so it owes us feedback */
+static bool video_renderer_rebuilding = false;   /* AirMirror: main() is about to replace the video renderer */
+static bool keep_audio_renderer = false;         /* AirMirror: the next relaunch must leave audio alone */
 static std::string video_parser = "h264parse";
 static std::string video_decoder = "decodebin";
 static std::string video_converter = "videoconvert";
@@ -551,10 +557,18 @@ static void dump_video_to_file(unsigned char *data, int datalen) {
 }
 
 static gboolean feedback_callback(gpointer loop) {
-    if (open_connections) {
-        if (missed_feedback_limit && missed_feedback > missed_feedback_limit) {
+    /* AirMirror: connections that never reached SETUP owe us no feedback: if they were
+     * counted, one left open by a client looking at /info would end the real session that
+     * follows it. iOS 27 can also stop mirroring with no sign but silence, so while a
+     * mirror window is up it is not left frozen for the full default limit. */
+    if (open_connections && client_session_started) {
+        guint limit = missed_feedback_limit;
+        if (mirror_session_active && limit > MIRROR_FEEDBACK_LIMIT) {
+            limit = MIRROR_FEEDBACK_LIMIT;
+        }
+        if (limit && missed_feedback > limit) {
             LOGI("***ERROR lost connection with client (network problem?)");
-            LOGI("   Interval since last client feedback request exceeds limit of %u seconds", missed_feedback_limit);
+            LOGI("   Interval since last client feedback request exceeds limit of %u seconds", limit);
             LOGI("   Sometimes the network connection may recover after a longer delay:\n"
                  "   the default limit n = %d seconds, can be changed with the \"-reset n\" option", MISSED_FEEDBACK_LIMIT);
             if (!nofreeze) {
@@ -587,6 +601,13 @@ static gboolean reset_callback(gpointer loop) {
              * actually drops the AirPlay client connection. */
             preserve_connections = false;
             url.erase();
+        }
+    }
+    if (mirror_end_time && g_get_monotonic_time() >= mirror_end_time) {
+        mirror_end_time = 0;
+        if (mirror_session_active) {
+            LOGI("client has stopped mirroring");
+            video_reset(NULL, raop_hls_pending(raop) ? RESET_TYPE_RTP_TO_HLS_TEARDOWN : RESET_TYPE_RTP_SHUTDOWN);
         }
     }
     if (reset_loop) {
@@ -2245,7 +2266,7 @@ static bool check_client(char *deviceid) {
     bool ret = false;
     int list =  allowed_clients.size();
     for (int i = 0; i < list ; i++) {
-        if (!strcmp(deviceid,allowed_clients[i].c_str())) {
+        if (deviceid && !strcmp(deviceid,allowed_clients[i].c_str())) {
 	    ret = true;
 	    break;
         }
@@ -2257,7 +2278,7 @@ static bool check_blocked_client(char *deviceid) {
     bool ret = false;
     int list =  blocked_clients.size();
     for (int i = 0; i < list ; i++) {
-        if (!strcmp(deviceid,blocked_clients[i].c_str())) {
+        if (deviceid && !strcmp(deviceid,blocked_clients[i].c_str())) {
 	    ret = true;
 	    break;
         }
@@ -2271,12 +2292,21 @@ static bool check_blocked_client(char *deviceid) {
 //to be simplified
 
 extern "C" void video_reset(void *cls, reset_type_t type) {
+    if (type != RESET_TYPE_ON_VIDEO_PLAY) {
+        mirror_session_active = false;
+        mirror_end_time = 0;
+    }
     switch (type) {
     case RESET_TYPE_NOHOLD:
         LOGD("video_reset: type = NoHold");
         if (hls_support) {
 	    url.erase();
             raop_destroy_airplay_video(raop, -1);
+        }
+        /* the client being admitted may start audio before main() acts on this reset */
+        if (use_audio) {
+            audio_renderer_stop();
+            keep_audio_renderer = true;
         }
     case RESET_TYPE_HLS_EOS:
         LOGD("video_reset: type= HLS_eos");
@@ -2305,6 +2335,7 @@ extern "C" void video_reset(void *cls, reset_type_t type) {
                 video_renderer_start();
                 hls_external_renderer_skipped = false;
                 close_window = false;  // we already closed the window
+                full_video_reset = false;
             }
         }
         preserve_connections = false; //we already closed all other connections
@@ -2315,12 +2346,25 @@ extern "C" void video_reset(void *cls, reset_type_t type) {
         LOGD("video_reset: type = RTP_to_HLS_Shutdown");
         preserve_connections = true;
     case RESET_TYPE_RTP_SHUTDOWN:
-        LOGD("video_reset: type = RTP_Shutdown");      
+        LOGD("video_reset: type = RTP_Shutdown");
+        if (type == RESET_TYPE_RTP_SHUTDOWN) {
+            /* AirMirror: drop this client's connection and audio now. If main() did this when it
+             * got round to the reset, it would also drop a client that had connected since. */
+            url.erase();
+            raop_remove_known_connections(raop);
+            preserve_connections = true;
+            if (use_audio) {
+                audio_renderer_stop();
+                keep_audio_renderer = true;
+            }
+        }
         if (use_video) {
+            video_renderer_rebuilding = true;
             video_renderer_stop();
         }
         remote_clock_offset = 0;
         relaunch_video = true;
+        full_video_reset = true;   /* the stopped renderer cannot be reused, whatever close_window says */
         break;
     case RESET_TYPE_HLS_SHUTDOWN:
         LOGD("video_reset: type = HLS_Shutdown");
@@ -2374,6 +2418,11 @@ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
     }
     if (!use_video) {
         return 0;
+    }
+    /* AirMirror: a client that returns straight after a disconnect must wait for main()
+     * to finish with the renderer, or its stream goes to one that is being replaced */
+    for (int i = 0; video_renderer_rebuilding && i < 500; i++) {
+        g_usleep(10000);
     }
     if (hls_external_returning_to_mirror) {
         hls_external_returning_to_mirror = false;
@@ -2431,6 +2480,7 @@ extern "C" void conn_destroy (void *cls) {
     open_connections--;
     LOGD("Open connections: %i", open_connections);
     if (open_connections == 0) {
+        client_session_started = false;
         remote_clock_offset = 0;
         if (use_audio) {
             audio_renderer_stop();
@@ -2447,6 +2497,14 @@ extern "C" void conn_destroy (void *cls) {
 extern "C" void conn_feedback (void *cls) {
     /* received client heartbeat signal: connection still exists */
     missed_feedback = 0;
+}
+
+extern "C" void mirror_ended (void *cls, int delay_ms) {
+    if (delay_ms < 0) {
+        mirror_end_time = 0;
+    } else if (mirror_session_active) {
+        mirror_end_time = g_get_monotonic_time() + (gint64) delay_ms * 1000;
+    }
 }
 
 extern "C" void conn_reset (void *cls, int reason) {
@@ -2487,6 +2545,10 @@ extern "C" void report_client_request(void *cls, char *deviceid, char * model, c
     // Pass device model to renderer for device frame display
     if (*admit && use_video) {
         video_renderer_set_device_model(model, name);
+    }
+    if (*admit) {
+        client_session_started = true;
+        missed_feedback = 0;
     }
 }
 
@@ -2533,14 +2595,21 @@ extern "C" void video_process (void *cls, raop_ntp_t *ntp, video_decode_struct *
         mux_renderer_push_video(data->data, data->data_len, data->ntp_time_remote);
     }
     if (use_video) {
+        mirror_session_active = true;
         if (!remote_clock_offset) {
             uint64_t local_time = (data->ntp_time_local ? data->ntp_time_local : get_local_time());
             remote_clock_offset = local_time - data->ntp_time_remote;
         }
         int count = 0;
         uint64_t pts_mismatch = 0;
+        const uint64_t ntp_time_remote = data->ntp_time_remote;
         do {
-            data->ntp_time_remote = data->ntp_time_remote + remote_clock_offset;
+            /* AirMirror: always start from the client's time. A frame stamped earlier than the
+             * pipeline's start (by any amount: its capture does precede its arrival) is retried
+             * here, and adding the offset to a time that already included it put that frame
+             * decades in the future, where the videosink waited for it with every later frame
+             * queued behind it: a session that displayed nothing, and reported no error. */
+            data->ntp_time_remote = ntp_time_remote + remote_clock_offset;
             pts_mismatch = video_renderer_render_buffer(data->data, &(data->data_len), &(data->nal_count), &(data->ntp_time_remote));
             if (pts_mismatch) {
                 LOGI("adjust timestamps by %8.6f secs", (double) pts_mismatch / SECOND_IN_NSECS);
@@ -2968,6 +3037,7 @@ static int start_raop_server (unsigned short display[5], unsigned short tcp[3], 
     raop_cbs.conn_init = conn_init;
     raop_cbs.conn_destroy = conn_destroy;
     raop_cbs.conn_reset = conn_reset;
+    raop_cbs.mirror_ended = mirror_ended;
     raop_cbs.conn_feedback = conn_feedback;
     raop_cbs.audio_process = audio_process;
     raop_cbs.video_process = video_process;
@@ -3515,10 +3585,12 @@ int main (int argc, char *argv[]) {
         if (reset_httpd) {
             raop_stop_httpd(raop);
         }
-        if (use_audio) {
+        if (use_audio && !keep_audio_renderer) {
             audio_renderer_stop();
         }
+        keep_audio_renderer = false;
         if (use_video && (close_window || preserve_connections || full_video_reset)) {
+            video_renderer_rebuilding = true;
             bool was_skipped = hls_external_renderer_skipped;
             bool entering_external_hls = (!url.empty() && hls_external);
             bool leaving_external_hls = (was_skipped && url.empty());
@@ -3555,6 +3627,9 @@ int main (int argc, char *argv[]) {
                 video_renderer_start();
             }
         }
+        video_renderer_rebuilding = false;
+        mirror_session_active = false;
+        mirror_end_time = 0;
         if (reset_httpd) {
             unsigned short port = raop_get_port(raop);
             raop_start_httpd(raop, &port);

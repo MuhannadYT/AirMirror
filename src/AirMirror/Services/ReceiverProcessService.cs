@@ -209,7 +209,9 @@ public sealed partial class ReceiverProcessService
             "-s",
             $"{width}x{height}@{refresh}",
             "-vs",
-            "d3d12videosink"
+            "d3d12videosink",
+            // Close the mirror window when a connection is lost, instead of leaving a frozen frame.
+            "-nofreeze"
         };
 
         if (settings.EnableHlsVideo)

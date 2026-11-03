@@ -296,6 +296,12 @@ pairing_digest_verify(const char *method, const char * authorization, const char
     }
     response = get_token(&cursor, "response", '\"', '\"');
 
+    /* the client supplied this header: any of these may be absent */
+    if (!username || !realm || !nonce || !uri || !response || (qop && (!nc || !cnonce))) {
+        free(sentence);
+        return false;
+    }
+
 #ifdef test_digest
     printf("username: [%s]  realm: [%s]\n", username, realm);
     printf("nonce: [%s]\n", nonce);
@@ -557,12 +563,18 @@ srp_validate_proof(pairing_session_t *session, pairing_t *pairing, const unsigne
                     int len_A, unsigned char *proof, int client_proof_len, int proof_len) {
     int authenticated  = 0;
     const unsigned char *B =  NULL;
-    const unsigned char *b = session->srp->private_key;
+    const unsigned char *b = NULL;
     int len_b = SRP_PRIVATE_KEY_SIZE;
     int len_B = 0;
     int len_K = 0;
     const unsigned char *session_key  = NULL;
     const unsigned char *M2 = NULL;
+
+    /* a client can send this step without the srp_new_user step before it */
+    if (!session->srp) {
+        return -1;
+    }
+    b = session->srp->private_key;
 
     struct SRPVerifier *verifier = srp_verifier_new(SRP_SHA, SRP_NG, (const char *) session->username,
                                                     (const unsigned char *) session->srp->salt, SRP_SALT_SIZE,
@@ -570,6 +582,13 @@ srp_validate_proof(pairing_session_t *session, pairing_t *pairing, const unsigne
                                                     A, len_A,
                                                     b, len_b,
                                                     &B, &len_B, NULL, NULL, 1);
+
+    /* NULL if the client's public key A is rejected (e.g. A % N == 0, or longer than N) */
+    if (!verifier) {
+        free (session->srp);
+        session->srp = NULL;
+        return -1;
+    }
 
     srp_verifier_verify_session(verifier, proof, &M2);
     authenticated = srp_verifier_is_authenticated(verifier);
@@ -595,7 +614,12 @@ srp_confirm_pair_setup(pairing_session_t *session, pairing_t *pairing,
     unsigned char aesKey[16] = {0}, aesIV[16] = {0};
     unsigned char hash[SHA512_DIGEST_LENGTH] = {0};
     unsigned char pk[ED25519_KEY_SIZE] = {0};
-    /* decrypt client epk to get client pk, authenticate with auth_tag*/ 
+    /* decrypt client epk to get client pk, authenticate with auth_tag*/
+
+    /* a client can send this step before srp_validate_proof has succeeded */
+    if (!session->srp) {
+        return -1;
+    }
 
     const char *salt = "Pair-Setup-AES-Key";
     sha_ctx_t *ctx = sha_init();

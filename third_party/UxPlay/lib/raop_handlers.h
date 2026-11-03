@@ -356,14 +356,22 @@ raop_handler_pairsetup_pin(raop_conn_t *conn,
         memset(proof, 0, sizeof(proof));
         uint64_t client_pk_len = 0;
         uint64_t client_proof_len = 0;
-        plist_get_data_val(req_pk_node, &client_pk, &client_pk_len); 
+        plist_get_data_val(req_pk_node, &client_pk, &client_pk_len);
         plist_get_data_val(req_proof_node, &client_proof, &client_proof_len);
+        /* AirMirror: 1.73.7 tests against sizeof(proof) (64), which rejects every real SHA-1 proof */
+        if (client_proof_len != SRP_PROOF_SIZE) {
+            logger_log(raop->logger, LOGGER_ERR, "Client Authentication Failure (client_proof_len %d invalid)", (int) client_proof_len);
+            free (client_proof);
+            free (client_pk);
+            plist_free(req_root_node);
+            goto authentication_failed;
+        }
         if (logger_debug) {
             char *str = utils_data_to_string((const unsigned char *) client_proof, client_proof_len, 20);
-            logger_log(raop->logger, LOGGER_DEBUG, "client SRP6a proof <M> :\n%s", str);	    
+            logger_log(raop->logger, LOGGER_DEBUG, "client SRP6a proof <M> :\n%s", str);
             free (str);
         }
-        memcpy(proof, client_proof, (int) client_proof_len);
+        memcpy(proof, client_proof, SRP_PROOF_SIZE);
         free (client_proof);
         int ret = srp_validate_proof(conn->session, raop->pairing, (const unsigned char *) client_pk,
                                      (int) client_pk_len, proof, (int) client_proof_len, (int) sizeof(proof));
@@ -393,24 +401,27 @@ raop_handler_pairsetup_pin(raop_conn_t *conn,
         uint64_t client_authtag_len = 0;
         unsigned char epk[ED25519_KEY_SIZE];
         unsigned char authtag[GCM_AUTHTAG_SIZE];
-        int ret = 0;
-        plist_get_data_val(req_epk_node, &client_epk, &client_epk_len); 
+        int ret = -1;
+        plist_get_data_val(req_epk_node, &client_epk, &client_epk_len);
         plist_get_data_val(req_authtag_node, &client_authtag, &client_authtag_len);
 
         if (logger_debug) {
             char *str = utils_data_to_string((const unsigned char *) client_epk, client_epk_len, 16);
             logger_log(raop->logger, LOGGER_DEBUG, "client_epk %d:\n%s\n", (int) client_epk_len, str);
+            free (str);
             str = utils_data_to_string((const unsigned char *) client_authtag, client_authtag_len, 16);
             logger_log(raop->logger, LOGGER_DEBUG, "client_authtag  %d:\n%s\n", (int) client_authtag_len, str);
             free (str);
         }
 
-        memcpy(epk, client_epk, ED25519_KEY_SIZE);
-        memcpy(authtag, client_authtag, GCM_AUTHTAG_SIZE);
+        if (client_epk_len == ED25519_KEY_SIZE && client_authtag_len == GCM_AUTHTAG_SIZE) {
+            memcpy(epk, client_epk, ED25519_KEY_SIZE);
+            memcpy(authtag, client_authtag, GCM_AUTHTAG_SIZE);
+            ret = srp_confirm_pair_setup(conn->session, raop->pairing, epk, authtag);
+        }
         free (client_authtag);
         free (client_epk);
         plist_free(req_root_node);
-        ret = srp_confirm_pair_setup(conn->session, raop->pairing, epk, authtag);
         if (ret < 0) {
             logger_log(raop->logger, LOGGER_ERR, "pair-pin-setup (step 3): client authentication failed\n");
             goto authentication_failed;
@@ -558,9 +569,10 @@ raop_handler_fpsetup(raop_conn_t *conn,
             if (!fairplay_setup(conn->fairplay, data, (unsigned char *) *response_data)) {
                 *response_datalen = 142;
             } else {
-                // Handle error?
+                logger_log(raop->logger, LOGGER_ERR, "fp-setup rejected: unsupported FairPlay version or mode");
                 free(*response_data);
                 *response_data = NULL;
+                http_response_init(response, "RTSP/1.0", 400, "Bad Request");
             }
         }
     } else if (datalen == 164) {
@@ -645,8 +657,8 @@ raop_handler_setup(raop_conn_t *conn,
             const char *authorization = NULL;
             authorization = http_request_get_header(request, "Authorization");
             if (!authorization) {
-                // if random_pw is set, but client has changed, unset it 
-                if (raop->random_pw && strncmp(raop->random_pw + pin_len + 1,  deviceID, 17)) {
+                // if random_pw is set, but client has changed, unset it
+                if (raop->random_pw && (!deviceID || strncmp(raop->random_pw + pin_len + 1,  deviceID, 17))) {
                     free(raop->random_pw);
                     raop->random_pw = NULL;
                 }
@@ -671,7 +683,7 @@ raop_handler_setup(raop_conn_t *conn,
                     char *pin = raop->random_pw;
                     snprintf(pin, pin_len + 1, "%04u", pin_4 % 10000);
                     pin[pin_len] = '\0';
-                    snprintf(pin + pin_len + 1, 18, "%s", deviceID);
+                    snprintf(pin + pin_len + 1, 18, "%s", (deviceID ? deviceID : ""));
                 } else {
                     logger_log(raop->logger, LOGGER_ERR, "Failed to allocate raop->random_pw");
                 }
@@ -691,8 +703,14 @@ raop_handler_setup(raop_conn_t *conn,
                 char nonce_string[33] = { '\0' };
                 //bool stale = false;  //not implemented
                 if (len && authorization) {
-                    const char *ptr = strstr(authorization, "nonce=\"") +  strlen("nonce=\"");
-                    strncpy(nonce_string, ptr, 32);
+                    const char *ptr = strstr(authorization, "nonce=\"");
+                    if (ptr) {
+                        ptr += strlen("nonce=\"");
+                        const char *end = strchr(ptr, '\"');
+                        if (end && end == ptr + 32) {
+                            strncpy(nonce_string, ptr, 32);
+                        }
+                    }
                     const char *method = http_request_get_method(request);
                     conn->authenticated = pairing_digest_verify(method, authorization, password);
 		    if (!conn->authenticated) {
@@ -704,11 +722,11 @@ raop_handler_setup(raop_conn_t *conn,
                     }
                     if (conn->authenticated) {
                         //printf("initial authenticatication OK\n");
-                        conn->authenticated = conn->authenticated && !strcmp(nonce_string, raop->nonce);
+                        conn->authenticated = conn->authenticated && raop->nonce && !strcmp(nonce_string, raop->nonce);
                         if (!conn->authenticated) {
                             logger_log(raop->logger, LOGGER_INFO, "authentication rejected (nonce mismatch) %s %s",
-                                       nonce_string, raop->nonce);
-                        }			
+                                       nonce_string, (raop->nonce ? raop->nonce : "(none issued)"));
+                        }
                     }
                     if (conn->authenticated && raop->random_pw) {
                         free (raop->random_pw);
@@ -736,6 +754,9 @@ raop_handler_setup(raop_conn_t *conn,
                     strncat(response_text, "\"", 80 - strlen(response_text) - 1);
                     http_response_init(response, "RTSP/1.0", 401, "Unauthorized");
                     http_response_add_header(response, "WWW-Authenticate", response_text);
+                    plist_mem_free(deviceID);
+                    plist_free(res_root_node);
+                    plist_free(req_root_node);
                     return;
                 }
             }
@@ -775,9 +796,22 @@ raop_handler_setup(raop_conn_t *conn,
             return;
         }
 
+        char* ekey = NULL;
+        uint64_t ekey_len = 0;
         plist_get_data_val(req_eiv_node, &eiv, &eiv_len);
-        memcpy(aesiv, eiv, 16);
-        free(eiv);	
+        plist_get_data_val(req_ekey_node, &ekey, &ekey_len);
+        if (eiv_len != sizeof(aesiv) || ekey_len != sizeof(eaeskey)) {
+            logger_log(raop->logger, LOGGER_ERR, "SETUP rejected: invalid eiv_len %llu (must be 16), ekey_len %llu (must be 72)",
+                       eiv_len, ekey_len);
+            free(eiv);
+            free(ekey);
+            plist_free(res_root_node);
+            plist_free(req_root_node);
+            http_response_init(response, "RTSP/1.0", 400, "Bad Request");
+            return;
+        }
+        memcpy(aesiv, eiv, sizeof(aesiv));
+        free(eiv);
         logger_log(raop->logger, LOGGER_DEBUG, "eiv_len = %llu", eiv_len);
         if (logger_debug) {
             char* str = utils_data_to_string(aesiv, 16, 16);
@@ -785,10 +819,7 @@ raop_handler_setup(raop_conn_t *conn,
             free(str);
         }
 
-        char* ekey = NULL;
-        uint64_t ekey_len = 0;
-        plist_get_data_val(req_ekey_node, &ekey, &ekey_len);
-        memcpy(eaeskey,ekey,72);
+        memcpy(eaeskey, ekey, sizeof(eaeskey));
         free(ekey);
         logger_log(raop->logger, LOGGER_DEBUG, "ekey_len = %llu", ekey_len);
         // eaeskey is 72 bytes, aeskey is 16 bytes
@@ -805,14 +836,15 @@ raop_handler_setup(raop_conn_t *conn,
             free(str);
         }
 
-        const char *user_agent = http_request_get_header(request, "User-Agent");
-        logger_log(raop->logger, LOGGER_INFO, "Client identified as User-Agent: %s", user_agent);	
-
         bool old_protocol = false;
+        const char *user_agent = http_request_get_header(request, "User-Agent");
+        if (user_agent) {
+            logger_log(raop->logger, LOGGER_INFO, "Client identified as User-Agent: %s", user_agent);
 #ifdef OLD_PROTOCOL_CLIENT_USER_AGENT_LIST    /* set in global.h */
-        if (strstr(OLD_PROTOCOL_CLIENT_USER_AGENT_LIST, user_agent)) old_protocol = true;
-        if (strstr(user_agent, "AirMyPC")) old_protocol = true;   //AirMyPC/7200 still uses old protocol: unlikely to change (?)
+            if (strstr(OLD_PROTOCOL_CLIENT_USER_AGENT_LIST, user_agent)) old_protocol = true;
+            if (strstr(user_agent, "AirMyPC")) old_protocol = true;   //AirMyPC/7200 still uses old protocol: unlikely to change (?)
 #endif
+        }
         if  (old_protocol) {    /* some windows AirPlay-client emulators use old AirPlay 1 protocol with unhashed AES key */
             logger_log(raop->logger, LOGGER_INFO, "Client identifed as using old protocol (unhashed) AES audio key)");
         } else {
@@ -899,6 +931,7 @@ raop_handler_setup(raop_conn_t *conn,
         }
         unsigned short timing_lport = raop->timing_lport;
 
+        raop->last_heartbeat = raop_ntp_get_local_time();
         conn->raop_ntp = NULL;
         conn->raop_rtp = NULL;
         conn->raop_rtp_mirror = NULL;
@@ -1179,10 +1212,12 @@ raop_handler_audiomode(raop_conn_t *conn,
     plist_from_bin(data, data_len, &req_root_node);
     plist_t req_audiomode_node = plist_dict_get_item(req_root_node, "audioMode");
     plist_get_string_val(req_audiomode_node, &audiomode);
-    /* not sure what should be done with this request: usually audioMode requested is "default" */
-    int log_level = (strstr(audiomode, "default") ? LOGGER_DEBUG : LOGGER_INFO);
-    logger_log(raop->logger, log_level, "Unhandled RTSP request \"audioMode: %s\"", audiomode);
-    plist_mem_free(audiomode);
+    if (audiomode) {
+        /* not sure what should be done with this request: usually audioMode requested is "default" */
+        int log_level = (strstr(audiomode, "default") ? LOGGER_DEBUG : LOGGER_INFO);
+        logger_log(raop->logger, log_level, "Unhandled RTSP request \"audioMode: %s\"", audiomode);
+        plist_mem_free(audiomode);
+    }
     plist_free(req_root_node);
 }
 
@@ -1194,6 +1229,7 @@ raop_handler_feedback(raop_conn_t *conn,
     raop_t *raop = conn->raop;
     logger_log(raop->logger, LOGGER_DEBUG, "raop_handler_feedback");
     /* register receipt of client's "heartbeat" signal  */
+    raop->last_heartbeat = raop_ntp_get_local_time();
     raop->callbacks.conn_feedback(raop->callbacks.cls);
 }
 
@@ -1277,7 +1313,8 @@ raop_handler_teardown(raop_conn_t *conn,
                 raop->callbacks.audio_stop_coverart_rendering(raop->callbacks.cls);
             }
         }
-    } else if (teardown_110) {
+    }
+    if (teardown_110) {
         if (raop->hls_pending) {
             raop->callbacks.video_reset(raop->callbacks.cls, RESET_TYPE_RTP_TO_HLS_TEARDOWN);
         } else {
@@ -1287,7 +1324,7 @@ raop_handler_teardown(raop_conn_t *conn,
         /* Stop our video RTP session */
             raop_rtp_mirror_stop(conn->raop_rtp_mirror);
         }
-    } else {
+    } else if (!teardown_96) {
         /* Destroy our sessions */
         if (conn->raop_rtp) {
             raop_rtp_destroy(conn->raop_rtp);
@@ -1296,6 +1333,10 @@ raop_handler_teardown(raop_conn_t *conn,
         if (conn->raop_rtp_mirror) {
             raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
             conn->raop_rtp_mirror = NULL;
+            /* iOS >= 27 does not send TEARDOWN 110 when mirroring is stopped */
+            if (raop->callbacks.mirror_ended) {
+                raop->callbacks.mirror_ended(raop->callbacks.cls, 0);
+            }
         }
         /* shut down any HLS connections */
         int hls_count = httpd_count_connection_type(raop->httpd, CONNECTION_TYPE_HLS);

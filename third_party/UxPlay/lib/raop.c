@@ -88,7 +88,10 @@ struct raop_s {
     /* activate support for HLS live streaming */
     bool hls_support;
     bool hls_pending;
-  
+
+    /* local time of the last sign of life from the client of a streaming session */
+    uint64_t last_heartbeat;
+
     /* used in digest authentication */
     char *nonce;
     char *random_pw;
@@ -124,6 +127,24 @@ typedef struct raop_conn_s raop_conn_t;
 
 #include "raop_handlers.h"
 #include "http_handlers.h"
+
+/* A client that sends /feedback every 2 secs has been silent for this long: it is gone,
+ * even if its connection was left open with no TEARDOWN and no FIN. */
+#define SESSION_STALE_NSECS (4 * 1000000000ULL)
+
+/* AirMirror: the RAOP connection (not this_conn) that holds a streaming session, if any.
+ * RAOP connections that have not reached SETUP are only clients looking at /info. */
+static raop_conn_t *
+raop_get_session_conn(raop_t *raop, raop_conn_t *this_conn) {
+    int count = httpd_count_connection_type(raop->httpd, CONNECTION_TYPE_RAOP);
+    for (int i = 1; i <= count; i++) {
+        raop_conn_t *conn = (raop_conn_t *) httpd_get_connection_by_type(raop->httpd, CONNECTION_TYPE_RAOP, i);
+        if (conn && conn != this_conn && conn->raop_ntp) {
+            return conn;
+        }
+    }
+    return NULL;
+}
 
 static void *
 conn_init(void *opaque, unsigned char *local, int locallen, unsigned char *remote, int remotelen, unsigned int zone_id) {
@@ -269,11 +290,13 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response) {
 
     if (conn->connection_type == CONNECTION_TYPE_UNKNOWN) {
         if (cseq || ble) {
-            if (httpd_count_connection_type(raop->httpd, CONNECTION_TYPE_RAOP)) {
+            if (raop_get_session_conn(raop, conn)) {
                 char ipaddr[40] = { '\0' };
                 utils_ipaddress_to_string(conn->remotelen, conn->remote, conn->zone_id, ipaddr, (int) (sizeof(ipaddr)));
-                if (httpd_nohold(raop->httpd)) {
-                    logger_log(raop->logger, LOGGER_INFO, "*****\"nohold\" feature: switch to new connection request from %s", ipaddr);		  
+                bool stale = raop_ntp_get_local_time() - raop->last_heartbeat > SESSION_STALE_NSECS;
+                if (httpd_nohold(raop->httpd) || stale) {
+                    logger_log(raop->logger, LOGGER_INFO, "*****switching to new connection request from %s%s", ipaddr,
+                               (stale ? " (previous client is gone)" : ""));
                     httpd_remove_known_connections(raop->httpd);
                     if (raop->callbacks.video_reset) {
                         raop->callbacks.video_reset(raop->callbacks.cls, RESET_TYPE_NOHOLD);
@@ -296,7 +319,7 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response) {
             assert(conn->client_session_id);
             memcpy(conn->client_session_id, client_session_id, strlen(client_session_id));
             /* airplay video has been requested: shut down any running RAOP udp services */
-            raop_conn_t *raop_conn = (raop_conn_t *) httpd_get_connection_by_type(raop->httpd, CONNECTION_TYPE_RAOP, 1);
+            raop_conn_t *raop_conn = raop_get_session_conn(raop, NULL);
             if (raop_conn) {
                 raop_rtp_mirror_t *raop_rtp_mirror = raop_conn->raop_rtp_mirror;
                 if (raop_rtp_mirror) {
@@ -395,8 +418,12 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response) {
         free(header_str);
     }
     
-    if (client_session_id) {
-        assert(!strcmp(client_session_id, conn->client_session_id));
+    /* only a connection typed as AIRPLAY has a session id to match: this header is
+     * not part of any other connection type, whatever the request carrying it says */
+    if (client_session_id && (!conn->client_session_id || strcmp(client_session_id, conn->client_session_id))) {
+        logger_log(raop->logger, LOGGER_ERR, "rejecting request with unexpected X-Apple-Session-ID");
+        http_response_init(*response, protocol, 400, "Bad Request");
+        goto finish;
     }
 
     logger_log(raop->logger, LOGGER_DEBUG, "Handling request %s with URL %s", method, url);
@@ -560,6 +587,9 @@ conn_destroy(void *ptr) {
     if (conn->raop_rtp_mirror) {
         /* This is done in case TEARDOWN was not called */
         raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
+        if (raop->callbacks.mirror_ended) {
+            raop->callbacks.mirror_ended(raop->callbacks.cls, 0);
+        }
     }
     if (conn->raop_ntp) {
         raop_ntp_destroy(conn->raop_ntp);
@@ -834,6 +864,11 @@ raop_set_lang(raop_t *raop, const char *lang) {
 char *
 raop_get_lang(raop_t *raop) {
     return raop->lang;
+}
+
+bool
+raop_hls_pending(raop_t *raop) {
+    return raop->hls_pending;
 }
 
 int

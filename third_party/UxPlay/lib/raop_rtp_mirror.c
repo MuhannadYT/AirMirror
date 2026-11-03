@@ -173,6 +173,37 @@ raop_rtp_mirror_init_aes(raop_rtp_mirror_t *raop_rtp_mirror, uint64_t *streamCon
 }
 
 #define RAOP_PACKET_LEN 32768
+/* how long the client has to send TEARDOWN or restart a stream it has closed (e.g. when
+ * handing off to HLS video) before we conclude that mirroring is over */
+#define STREAM_RESTART_MSECS 1000
+/* a packet's buffers are allocated on the word of its header, before any of it arrives. This is
+ * far more than a client sends, and more than an uncompressed 8K 4:2:0 frame (47.5 MiB). */
+#define MAX_PAYLOAD_SIZE (64 * 1024 * 1024)
+
+/* the size of the HEVC parameter set at payload[offset]: 4 bytes matching start_code, a size
+ * in bytes 3-4, then the set. The size is the client's word, so it is only returned if the
+ * set is inside the payload; -1 if it is not, or if the start code does not match. */
+static short
+hevc_parameter_set_size(unsigned char *payload, int payload_size, int offset, const unsigned char *start_code)
+{
+    if (payload_size - offset < 5 || memcmp(payload + offset, start_code, 4)) {
+        return -1;
+    }
+    short size = byteutils_get_short_be(payload, offset + 3);
+    return (size > payload_size - offset - 5) ? -1 : size;
+}
+
+static int
+raop_rtp_mirror_set_nonblocking(int fd)
+{
+#ifdef _WIN32
+    u_long nonblocking = 1;
+#else
+    int nonblocking = 1;
+#endif
+    return IOCTLSOCKET(fd, FIONBIO, &nonblocking);
+}
+
 /**
  * Mirror
  */
@@ -190,6 +221,7 @@ raop_rtp_mirror_thread(void *arg)
     unsigned char* payload = NULL;
     unsigned int readstart = 0;
     bool conn_reset = false;
+    bool stream_ended = false;
     uint64_t ntp_timestamp_nal = 0;
     uint64_t ntp_timestamp_raw = 0;
     uint64_t ntp_timestamp_remote = 0;
@@ -256,14 +288,16 @@ raop_rtp_mirror_thread(void *arg)
                 break;
             }
 
-            // We're calling recv for a certain amount of data, so we need a timeout
-            struct timeval tv;
-            tv.tv_sec = 0;
-            tv.tv_usec = 5000;
-            if (setsockopt(stream_fd, SOL_SOCKET, SO_RCVTIMEO, CAST &tv, sizeof(tv)) < 0) {
+            /* We're calling recv for a certain amount of data, which a client can stop sending at any
+             * point. recv must not block there: only this thread can see that running was cleared,
+             * and whoever cleared it waits for this thread with every other client behind it. With
+             * nothing to read yet, a recv returns to select, then carries on from readstart.
+             * SO_RCVTIMEO cannot do this: Windows reads it as a DWORD of milliseconds, not a timeval,
+             * and calls a connection indeterminate after a timeout, which a slow client must survive. */
+            if (raop_rtp_mirror_set_nonblocking(stream_fd) < 0) {
                 int sock_err = SOCKET_GET_ERROR();
                 logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
-                           "raop_rtp_mirror could not set stream socket timeout %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
+                           "raop_rtp_mirror could not set stream socket non-blocking %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
                 break;
             }
 
@@ -295,6 +329,9 @@ raop_rtp_mirror_thread(void *arg)
             }
 #endif /* !__OpenBSD__ */
             readstart = 0;
+            if (raop_rtp_mirror->callbacks.mirror_ended) {
+                raop_rtp_mirror->callbacks.mirror_ended(raop_rtp_mirror->callbacks.cls, -1);
+            }
         }
 
         if (stream_fd != -1 && FD_ISSET(stream_fd, &rfds)) {
@@ -311,19 +348,37 @@ raop_rtp_mirror_thread(void *arg)
                 logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG,
                            "raop_rtp_mirror tcp socket was closed by client (recv returned 0); got %d bytes of 128 byte header",readstart);
                 FD_CLR(stream_fd, &rfds);
+                CLOSESOCKET(stream_fd);
                 stream_fd = -1;
+                /* keep listening: a client may restart the stream, but it has not ended well if it does not */
+                if (raop_rtp_mirror->callbacks.mirror_ended) {
+                    raop_rtp_mirror->callbacks.mirror_ended(raop_rtp_mirror->callbacks.cls, STREAM_RESTART_MSECS);
+                }
                 continue;
             } else if (payload == NULL && ret == -1) {
                 int sock_err = SOCKET_GET_ERROR();
-                if (sock_err == SOCKET_ERRORNAME(EAGAIN) || sock_err == SOCKET_ERRORNAME(EWOULDBLOCK)) continue; // Timeouts can happen even if the connection is fine
+                if (sock_err == SOCKET_ERRORNAME(EAGAIN) || sock_err == SOCKET_ERRORNAME(EWOULDBLOCK)) continue; // Nothing to read yet even if the connection is fine
                 logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
                            "raop_rtp_mirror error  in header recv: %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
-                if (sock_err == SOCKET_ERRORNAME(ECONNRESET)) conn_reset = true;; 
+                stream_ended = true;
                 break;
             }
 
             /*packet[0:3] contains the payload size */
             int payload_size = byteutils_get_int(packet, 0);
+            if (payload_size < 0 || payload_size > MAX_PAYLOAD_SIZE) {
+                /* the next header is only found through this size, so the stream cannot continue:
+                 * treat it as closed by the client, who may still restart it */
+                logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
+                           "raop_rtp_mirror closing stream: invalid payload size %d in packet header", payload_size);
+                FD_CLR(stream_fd, &rfds);
+                CLOSESOCKET(stream_fd);
+                stream_fd = -1;
+                if (raop_rtp_mirror->callbacks.mirror_ended) {
+                    raop_rtp_mirror->callbacks.mirror_ended(raop_rtp_mirror->callbacks.cls, STREAM_RESTART_MSECS);
+                }
+                continue;
+            }
             char packet_description[13] = {0};
             char *p = packet_description;
             int n = sizeof(packet_description);
@@ -369,6 +424,13 @@ raop_rtp_mirror_thread(void *arg)
             if (payload == NULL) {
                 payload = malloc(payload_size);
                 readstart = 0;
+                /* a NULL payload would make the next call read this packet's payload as a header */
+                if (!payload && payload_size > 0) {
+                    logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
+                               "raop_rtp_mirror closing stream: out of memory for %d byte packet", payload_size);
+                    stream_ended = true;
+                    break;
+                }
             }
 
             while ((int) readstart < payload_size) {
@@ -381,12 +443,13 @@ raop_rtp_mirror_thread(void *arg)
 
             if (ret == 0) {
                 logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "raop_rtp_mirror tcp socket was closed by client (recv returned 0)");
+                stream_ended = true;
                 break;
             } else if (ret == -1) {
                 int sock_err = SOCKET_GET_ERROR();
-                if (sock_err == SOCKET_ERRORNAME(EAGAIN) || sock_err == SOCKET_ERRORNAME(EWOULDBLOCK)) continue; // Timeouts can happen even if the connection is fine
+                if (sock_err == SOCKET_ERRORNAME(EAGAIN) || sock_err == SOCKET_ERRORNAME(EWOULDBLOCK)) continue; // Nothing to read yet even if the connection is fine
                 logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "raop_rtp_mirror error in recv: %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
-                if (errno == SOCKET_ERRORNAME(ECONNRESET)) conn_reset = true;
+                stream_ended = true;
                 break;
             }
 
@@ -409,6 +472,12 @@ raop_rtp_mirror_thread(void *arg)
                                (double) ntp_timestamp_remote / SEC, packet_description, (h265_video ? h265 : h264), payload_size);
                 }
 
+                /* nothing to decrypt or to show, and the renderer reads a frame's first byte to see if
+                 * decryption worked. Parameter sets stay for the next frame, which needs them. */
+                if (payload_size == 0) {
+                    break;
+                }
+
                 unsigned char* payload_out;
                 unsigned char* payload_decrypted;
                 /*
@@ -427,28 +496,29 @@ raop_rtp_mirror_thread(void *arg)
                  * that has not yet been sent.   This will trigger prepending it to the current NAL, and the prepend_sps_pps 
                  * flag will be set to false after it has been prepended.  */
 
+                /* AirMirror: these are still prepended. A client only sends them at the start of a
+                 * stream or a format change, and without them nothing can be decoded after that. */
                 if (prepend_sps_pps & (ntp_timestamp_raw != ntp_timestamp_nal)) {
                         logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG,
                                    "raop_rtp_mirror: prepended sps_pps timestamp does not match timestamp of "
-                                   "video payload\n%llu\n%llu , discarding", ntp_timestamp_raw, ntp_timestamp_nal);
-                        free (sps_pps);
-                        sps_pps = NULL;
-                        prepend_sps_pps = false;
+                                   "video payload\n%llu\n%llu", ntp_timestamp_raw, ntp_timestamp_nal);
                 }
-		
+
+                payload_out = (unsigned char*) malloc(payload_size + (prepend_sps_pps ? sps_pps_len : 0));
+                if (!payload_out) {
+                    /* the next frame continues this one's CTR stream, so this one cannot be skipped */
+                    logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
+                               "raop_rtp_mirror closing stream: out of memory for %d byte frame", payload_size);
+                    stream_ended = true;
+                    break;
+                }
                 if (prepend_sps_pps) {
                     assert(sps_pps);
-                    payload_out = (unsigned char*) malloc(payload_size + sps_pps_len);
-                    if (!payload_out) {
-                        printf("Memory allocation failed (payload_out)\n");
-                        exit(1);
-                    }
                     payload_decrypted = payload_out + sps_pps_len;
                     memcpy(payload_out, sps_pps, sps_pps_len);
                     free (sps_pps);
                     sps_pps = NULL;
                 } else {
-                    payload_out = (unsigned char*)  malloc(payload_size);
                     payload_decrypted = payload_out;
                 }
                 // Decrypt data: AES-CTR encryption/decryption  does not change the size of the data
@@ -460,14 +530,24 @@ raop_rtp_mirror_thread(void *arg)
                 int nalu_size = 0;
                 int nalus_count = 0;
                 while (nalu_size < payload_size) {
+                    if (nalu_size + 4 > payload_size) {
+                        valid_data = false;
+                        break;
+                    }
                     int nc_len = byteutils_get_int_be(payload_decrypted, nalu_size);
-                    if (nc_len < 0 || nalu_size + 4 > payload_size) {
+                    /* nc_len is read from the payload, so it is only a
+                     * length if the unit it claims fits in what is left. */
+                    if (nc_len < 0 || nc_len > payload_size - nalu_size - 4) {
                         valid_data = false;
                         break;
                     }
                     memcpy(payload_decrypted + nalu_size, nal_start_code, 4);
                     nalu_size += 4;
                     nalus_count++;
+                    /* an empty unit has no header byte to inspect (it may be the end of the payload) */
+                    if (nc_len == 0) {
+                        continue;
+                    }
                     /* first bit of h264 nalu MUST be 0 ("forbidden_zero_bit") */
                     if (payload_decrypted[nalu_size] & 0x80) {
                         valid_data = false;
@@ -620,10 +700,17 @@ raop_rtp_mirror_thread(void *arg)
                     unsupported_codec = true;
                     break;
                 }
+                if (payload_size < 8) {
+                    /* both codecs need more than this, to identify them and to read their first size */
+                    logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "raop_rtp_mirror: codec packet too short: payload_size %d", payload_size);
+                    break;
+                }
                 if (sps_pps) {
                     free(sps_pps);
                     sps_pps = NULL;
                 }
+                /* the next frame must not look for what was just freed if this packet is rejected below */
+                prepend_sps_pps = false;
                 /* test for a H265 VPS/SPS/PPS */
                 unsigned char hvc1[] = { 0x68, 0x76, 0x63, 0x31 };
 
@@ -648,44 +735,44 @@ raop_rtp_mirror_thread(void *arg)
                     unsigned char sps_start_code[] = { 0xa1, 0x00, 0x01, 0x00 };
                     unsigned char pps_start_code[] = { 0xa2, 0x00, 0x01, 0x00 };
 
-                    unsigned char * ptr = payload + 0x75;
- 
-                    if (memcmp(ptr, vps_start_code, 4)) {
+                    int offset = 0x75;
+
+                    short vps_size = hevc_parameter_set_size(payload, payload_size, offset, vps_start_code);
+                    if (vps_size < 0) {
                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (VPS)");
                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
                         break;
                     }
-                    short vps_size = byteutils_get_short_be(ptr, 3);
-                    ptr += 5;
-                    unsigned char *vps = ptr;
+                    offset += 5;
+                    unsigned char *vps = payload + offset;
                     if (logger_debug) {
                         char *str = utils_data_to_string(vps, vps_size, 16);
                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "h265 vps size %d\n%s",vps_size, str);
                         free(str);
                     }
-                    ptr += vps_size;
-                    if (memcmp(ptr, sps_start_code, 4)) {
+                    offset += vps_size;
+                    short sps_size = hevc_parameter_set_size(payload, payload_size, offset, sps_start_code);
+                    if (sps_size < 0) {
                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (SPS)");
                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
                         break;
                     }
-                    short sps_size = byteutils_get_short_be(ptr, 3);
-                    ptr += 5;
-                    unsigned char *sps = ptr;
+                    offset += 5;
+                    unsigned char *sps = payload + offset;
                     if (logger_debug) {
                         char *str = utils_data_to_string(sps, sps_size, 16);
                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "h265 sps size %d\n%s",vps_size, str);
                         free(str);
                     }
-                    ptr += sps_size;
-                    if (memcmp(ptr, pps_start_code, 4)) {
-                       logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (PPS)");			
+                    offset += sps_size;
+                    short pps_size = hevc_parameter_set_size(payload, payload_size, offset, pps_start_code);
+                    if (pps_size < 0) {
+                       logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (PPS)");
                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
                         break;
                     }
-                    short pps_size = byteutils_get_short_be(ptr, 3);
-                    ptr += 5;
-                    unsigned char *pps = ptr;
+                    offset += 5;
+                    unsigned char *pps = payload + offset;
                     if (logger_debug) {
                         char *str = utils_data_to_string(pps, pps_size, 16);
                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "h265 pps size %d\n%s",pps_size, str);
@@ -695,7 +782,7 @@ raop_rtp_mirror_thread(void *arg)
                     sps_pps_len = vps_size + sps_size + pps_size + 12;
                     sps_pps = (unsigned char*) malloc(sps_pps_len);
                     assert(sps_pps);
-                    ptr = sps_pps;
+                    unsigned char *ptr = sps_pps;
                     memcpy(ptr, nal_start_code, 4);
                     ptr += 4;
                     memcpy(ptr, vps, vps_size);
@@ -724,8 +811,17 @@ raop_rtp_mirror_thread(void *arg)
                         break;
                     }
                     short sps_size = byteutils_get_short_be(payload,6);
+                    short pps_size = -1;
+                    /* the sizes are the client's word: both sets must be inside the payload */
+                    if (sps_size >= 0 && sps_size <= payload_size - 11) {
+                        pps_size = byteutils_get_short_be(payload, sps_size + 9);
+                    }
+                    if (pps_size < 0 || pps_size > payload_size - sps_size - 11) {
+                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming H264 SPS/PPS payload");
+                        raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                        break;
+                    }
                     unsigned char *sequence_parameter_set = payload + 8;
-                    short pps_size = byteutils_get_short_be(payload, sps_size + 9);
                     unsigned char *picture_parameter_set = payload + sps_size + 11;
                     int data_size = 6;
                     if (logger_debug) {
@@ -748,8 +844,6 @@ raop_rtp_mirror_thread(void *arg)
                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "remainder size = %d", data_size);
                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "remainder of SPS+PPS packet:\n%s", str);
                         free(str);
-                    } else if (data_size < 0) {
-                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR, " pps_sps error: packet remainder size = %d < 0", data_size);
                     }
 
                     // Copy the sps and pps into a buffer to prepend to the next NAL unit.
@@ -814,6 +908,7 @@ raop_rtp_mirror_thread(void *arg)
                             logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "%s", plist_xml);
                             free(plist_xml);
                         }
+                        plist_free(root_node);
                     }
                 }
                 break;
@@ -827,15 +922,24 @@ raop_rtp_mirror_thread(void *arg)
             payload = NULL;
             memset(packet, 0, 128);
             readstart = 0;
-            if (unsupported_codec) {
+            if (unsupported_codec || stream_ended) {
                 break;
             }
         }
     }
+    /* the stream can end with a packet half read, or parameter sets waiting for their frame */
+    free(payload);
+    free(sps_pps);
+
     /* Close the stream file descriptor */
     if (stream_fd != -1) {
         CLOSESOCKET(stream_fd);
     }
+
+    /* every exit passes here: with this thread gone nothing accepts, so a client must be
+     * refused rather than left waiting in the backlog of a socket that is never read */
+    CLOSESOCKET(raop_rtp_mirror->mirror_data_sock);
+    raop_rtp_mirror->mirror_data_sock = -1;
 
     // Ensure running reflects the actual state
     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
@@ -848,11 +952,11 @@ raop_rtp_mirror_thread(void *arg)
     logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG, "raop_rtp_mirror exiting TCP thread");
     if (conn_reset&& raop_rtp_mirror->callbacks.conn_reset) {
         raop_rtp_mirror->callbacks.conn_reset(raop_rtp_mirror->callbacks.cls, 1);
+    } else if (stream_ended && raop_rtp_mirror->callbacks.mirror_ended) {
+        raop_rtp_mirror->callbacks.mirror_ended(raop_rtp_mirror->callbacks.cls, STREAM_RESTART_MSECS);
     }
 
     if (unsupported_codec) {
-        CLOSESOCKET(raop_rtp_mirror->mirror_data_sock);
-        raop_rtp_mirror_stop(raop_rtp_mirror);
         raop_rtp_mirror->callbacks.video_reset(raop_rtp_mirror->callbacks.cls, RESET_TYPE_RTP_SHUTDOWN);
     }
 
@@ -933,10 +1037,10 @@ raop_rtp_mirror_start(raop_rtp_mirror_t *raop_rtp_mirror, unsigned short *mirror
 void raop_rtp_mirror_stop(raop_rtp_mirror_t *raop_rtp_mirror) {
     assert(raop_rtp_mirror);
 
-    /* Check that we are running and thread is not
-     * joined (should never be while still running) */
+    /* Check that the thread is not joined. It may not be running, but it can end by itself
+     * (e.g. when a client closes mid-packet), and its last steps still use this structure */
     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
-    if (!raop_rtp_mirror->running || raop_rtp_mirror->joined) {
+    if (raop_rtp_mirror->joined) {
         MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
         return;
     }
@@ -945,11 +1049,6 @@ void raop_rtp_mirror_stop(raop_rtp_mirror_t *raop_rtp_mirror) {
 
     /* Join the thread */
     THREAD_JOIN(raop_rtp_mirror->thread_mirror);
-
-    if (raop_rtp_mirror->mirror_data_sock != -1) {
-        CLOSESOCKET(raop_rtp_mirror->mirror_data_sock);
-        raop_rtp_mirror->mirror_data_sock = -1;
-    }
 
     /* Mark thread as joined */
     MUTEX_LOCK(raop_rtp_mirror->run_mutex);

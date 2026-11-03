@@ -1108,9 +1108,13 @@ static void video_renderer_destroy_instance(video_renderer_t *renderer) {
 }
 
 void video_renderer_destroy() {
+    /* the stream and bus threads can still be running: leave them nothing that dangles */
+    renderer = NULL;
     for (int i = 0; i < n_renderers; i++) {
         if (renderer_type[i]) {
-            video_renderer_destroy_instance(renderer_type[i]);
+            video_renderer_t *destroyed = renderer_type[i];
+            renderer_type[i] = NULL;
+            video_renderer_destroy_instance(destroyed);
         }
     }
 }

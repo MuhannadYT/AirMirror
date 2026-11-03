@@ -78,8 +78,12 @@ struct raop_callbacks_s {
     void  (*conn_feedback) (void *cls);
     void  (*conn_reset) (void *cls, int reason);
     void  (*video_reset) (void *cls, reset_type_t reset_type);
-  
-  
+    /* AirMirror: the client ended (or lost) the mirror stream by any route other than
+     * TEARDOWN 110. delay_ms > 0 allows that long for it to come back; delay_ms < 0 means
+     * that it did. */
+    void  (*mirror_ended) (void *cls, int delay_ms);
+
+
     /* Optional but recommended callback functions (probably not optional, check this)*/
     void  (*conn_init)(void *cls);
     void  (*conn_destroy)(void *cls);
@@ -119,6 +123,7 @@ raop_ntp_t *raop_ntp_init(logger_t *logger, raop_callbacks_t *callbacks, const c
 
 airplay_video_t *airplay_video_init(raop_t *raop, unsigned short port, const char *lang);
 char *raop_get_lang(raop_t *raop);
+bool raop_hls_pending(raop_t *raop);
 uint64_t get_local_time();
 void raop_handle_eos(raop_t *raop);
 

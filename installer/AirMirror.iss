@@ -24,7 +24,7 @@
 #endif
 
 #define MyAppName "AirMirror"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "MuhannadYT"
 #define MyAppURL "https://github.com/MuhannadYT"
 #define MyAppExeName "AirMirror.exe"

@@ -1,0 +1,9 @@
+# Let git normalise line endings for new text files. Files already committed
+# with CRLF keep it, so existing files don't show up as whole-file diffs.
+* text=auto
+
+# Binary assets
+*.png  binary
+*.ico  binary
+*.dll  binary
+*.exe  binary

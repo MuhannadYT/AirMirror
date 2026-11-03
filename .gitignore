@@ -19,3 +19,11 @@ dist/
 
 # Logs
 *.log
+
+.vs/
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini
+.DS_Store
