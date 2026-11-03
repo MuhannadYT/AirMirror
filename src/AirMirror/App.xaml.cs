@@ -23,6 +23,10 @@ public partial class App : System.Windows.Application
     {
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
+        // The update prompt is a WinForms TaskDialog, which throws "Visual styles are not
+        // enabled" unless this runs first. Unhandled on the dispatcher, that crashed the app.
+        System.Windows.Forms.Application.EnableVisualStyles();
+
         try
         {
             Core.Initialize();
